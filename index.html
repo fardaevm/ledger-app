@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F172A">
+<!-- Invite links carry a secret in the path; never leak it to other sites via Referer. -->
+<meta name="referrer" content="no-referrer">
+<title>Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= AUTH VIEW =================
+       Password inputs deliberately have no name attribute: if the form were ever
+       submitted natively (e.g. before the script loads), unnamed fields are not sent,
+       so a password can never end up in a URL or server log. -->
+  <section id="view-auth" class="screen">
+    <div class="auth-card">
+      <h1 class="brand">Ledger</h1>
+      <p class="tagline">Shared family income &amp; expenses</p>
+
+      <p class="auth-note invite" id="authInviteNote" hidden>You've been invited to a shared household. Sign in or create an account to join it.</p>
+      <p class="hint error auth-link-error" id="authLinkError" role="alert" hidden></p>
+
+      <div class="auth-tabs" id="authTabs" role="tablist" aria-label="Account">
+        <button type="button" role="tab" class="active" id="tabSignIn" aria-selected="true" aria-controls="signInForm">Sign in</button>
+        <button type="button" role="tab" id="tabSignUp" aria-selected="false" aria-controls="signUpForm">Create account</button>
+      </div>
+
+      <form id="signInForm" class="auth-form" method="post" role="tabpanel" aria-labelledby="tabSignIn">
+        <div class="field">
+          <label for="signInEmail">Email</label>
+          <input type="email" id="signInEmail" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="signInPassword">Password</label>
+          <input type="password" id="signInPassword" autocomplete="current-password" maxlength="72" required>
+        </div>
+        <button type="submit" class="btn-primary" id="signInSubmit">Sign in</button>
+        <p class="hint" id="signInHint" role="status" aria-live="polite"></p>
+        <button type="button" class="text-link" id="resendConfirm" hidden>Resend confirmation email</button>
+        <button type="button" class="text-link" id="showForgot">Forgot password?</button>
+        <p class="auth-note">
+          <strong>First time signing in with a password?</strong> Ledger used to send you email
+          links instead. <button type="button" class="text-link inline" id="setPasswordLink">Reset your password to set one</button>
+          — your household and entries stay exactly as they are.
+        </p>
+      </form>
+
+      <form id="signUpForm" class="auth-form" method="post" role="tabpanel" aria-labelledby="tabSignUp" hidden>
+        <div class="field">
+          <label for="signUpName">Your name</label>
+          <input type="text" id="signUpName" autocomplete="name" maxlength="60" required>
+        </div>
+        <div class="field">
+          <label for="signUpEmail">Email</label>
+          <input type="email" id="signUpEmail" autocomplete="email" required>
+        </div>
+        <div class="field">
+          <label for="signUpPassword">Password</label>
+          <input type="password" id="signUpPassword" autocomplete="new-password" minlength="8" maxlength="72" aria-describedby="signUpPasswordHelp" required>
+          <span class="field-help" id="signUpPasswordHelp">At least 8 characters.</span>
+        </div>
+        <button type="submit" class="btn-primary" id="signUpSubmit">Create account</button>
+        <p class="hint" id="signUpHint" role="status" aria-live="polite"></p>
+        <button type="button" class="text-link" id="resendSignup" hidden>Resend confirmation email</button>
+      </form>
+
+      <form id="forgotForm" class="auth-form" method="post" hidden>
+        <p class="auth-lead">Enter your email and we'll send you a link to set a new password.</p>
+        <div class="field">
+          <label for="forgotEmail">Email</label>
+          <input type="email" id="forgotEmail" autocomplete="username" required>
+        </div>
+        <button type="submit" class="btn-primary" id="forgotSubmit">Send reset link</button>
+        <p class="hint" id="forgotHint" role="status" aria-live="polite"></p>
+        <button type="button" class="text-link" id="backToSignIn">Back to sign in</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ================= SET NEW PASSWORD (from the reset email) ================= -->
+  <section id="view-reset" class="screen" style="display:none;">
+    <div class="auth-card">
+      <h1 class="brand">Ledger</h1>
+      <p class="tagline">Set a new password</p>
+      <form id="resetForm" class="auth-form" method="post">
+        <!-- Lets password managers file the new password under the right account. -->
+        <input type="email" id="resetUsername" class="visually-hidden" autocomplete="username" tabindex="-1" aria-hidden="true" readonly>
+        <div class="field">
+          <label for="resetPassword">New password</label>
+          <input type="password" id="resetPassword" autocomplete="new-password" minlength="8" maxlength="72" aria-describedby="resetPasswordHelp" required>
+          <span class="field-help" id="resetPasswordHelp">At least 8 characters.</span>
+        </div>
+        <div class="field">
+          <label for="resetConfirm">Confirm new password</label>
+          <input type="password" id="resetConfirm" autocomplete="new-password" minlength="8" maxlength="72" required>
+        </div>
+        <button type="submit" class="btn-primary" id="resetSubmit">Save password</button>
+        <p class="hint" id="resetHint" role="status" aria-live="polite"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ================= NAME YOUR HOUSEHOLD (new accounts only) ================= -->
+  <section id="view-household" class="screen" style="display:none;">
+    <div class="auth-card">
+      <h1 class="brand">Ledger</h1>
+      <p class="tagline">Name your household</p>
+      <form id="createHouseholdForm" class="auth-form" method="post">
+        <div class="field">
+          <label for="hhName">Household name</label>
+          <input type="text" id="hhName" maxlength="60" placeholder="e.g. Ali &amp; Sara" autocomplete="off">
+        </div>
+        <button type="submit" class="btn-primary" id="hhSubmit">Continue</button>
+        <p class="hint" id="householdHint" role="status" aria-live="polite"></p>
+        <p class="auth-note">Joining your partner's household instead? Open the invite link they sent you.</p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ================= STATUS (invite results, load errors) ================= -->
+  <section id="view-status" class="screen" style="display:none;">
+    <div class="auth-card">
+      <h1 class="brand">Ledger</h1>
+      <p class="tagline" id="statusTitle"></p>
+      <p class="status-message" id="statusMessage" role="status"></p>
+      <button type="button" class="btn-primary" id="statusAction" hidden></button>
+    </div>
+  </section>
+
+  <!-- ================= APP VIEW ================= -->
+  <section id="view-app" class="screen" style="display:none;">
+    <div class="wrap">
+      <header class="top">
+        <div>
+          <h1 id="hhTitle">Ledger</h1>
+          <div class="tagline">Shared family income &amp; expenses</div>
+        </div>
+        <div class="period-nav">
+          <span class="select-wrap">
+            <select id="periodMode" aria-label="View by">
+              <option value="monthly" selected>Monthly</option>
+              <option value="annual">Annual</option>
+            </select>
+          </span>
+          <span class="select-wrap">
+            <select id="periodValue" aria-label="Month"></select>
+          </span>
+        </div>
+      </header>
+
+      <div class="sync-bar">
+        <div class="sync-status"><span class="sync-dot" id="syncDot"></span><span id="syncLabel">Connecting…</span></div>
+        <div class="right-actions">
+          <button class="link-btn" id="inviteBtn" aria-expanded="false" aria-controls="invitePanel">Invite partner</button>
+          <button class="link-btn" id="signOutBtn">Sign out</button>
+        </div>
+      </div>
+
+      <div class="invite-panel" id="invitePanel" hidden>
+        <p class="invite-title">Invite your partner</p>
+        <p class="invite-help">Send them this link. It works once and expires in 7 days.</p>
+        <input type="text" id="inviteLink" class="invite-link" readonly aria-label="Invite link">
+        <div class="invite-actions" id="inviteActions">
+          <button type="button" class="btn-secondary" id="inviteShare" hidden>Share…</button>
+          <button type="button" class="btn-primary" id="inviteCopy">Copy link</button>
+        </div>
+        <p class="hint" id="inviteHint" role="status" aria-live="polite"></p>
+        <button type="button" class="goal-close" id="inviteClose" aria-label="Close invite panel">×</button>
+      </div>
+
+      <div class="banner" id="noticeBanner" role="status" hidden></div>
+      <div class="banner warn" id="permBanner" style="display:none;"></div>
+
+      <div class="summary">
+        <section class="stat profit hero" aria-label="Profit">
+          <div class="hero-inner">
+            <div class="hero-head">
+              <div class="label">Profit</div>
+              <div class="value" id="sumProfit">$0</div>
+            </div>
+            <div class="hero-detail">
+              <button type="button" class="rings-btn goal-toggle" aria-expanded="false" aria-controls="goalEditor" aria-label="Set profit goal" title="Set profit goal">
+                <svg class="rings" viewBox="0 0 100 100" aria-hidden="true">
+                  <g transform="rotate(-90 50 50)">
+                    <circle class="ring-track profit" cx="50" cy="50" r="42" />
+                    <circle class="ring-fill profit" id="ringProfit" cx="50" cy="50" r="42" pathLength="100" />
+                    <circle class="ring-track expense" cx="50" cy="50" r="30" />
+                    <circle class="ring-fill expense" id="ringExpense" cx="50" cy="50" r="30" pathLength="100" />
+                    <circle class="ring-track period" cx="50" cy="50" r="18" />
+                    <circle class="ring-fill period" id="ringPeriod" cx="50" cy="50" r="18" pathLength="100" />
+                  </g>
+                </svg>
+              </button>
+              <ul class="ring-legend">
+                <li class="profit">
+                  <i class="swatch"></i>
+                  <span><b id="ringProfitPct">0%</b> <span id="ringGoalText">of $3,000 goal</span></span>
+                  <button type="button" class="goal-edit goal-toggle" aria-expanded="false" aria-controls="goalEditor" aria-label="Edit profit goal" title="Edit profit goal">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 2.3a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L5.6 13H3v-2.6z" /></svg>
+                  </button>
+                </li>
+                <li class="expense"><i class="swatch"></i><span><b id="ringSpentPct">—</b> spent</span></li>
+                <li class="period"><i class="swatch"></i><span><b id="ringPeriodPct">0%</b> of <span id="ringPeriodUnit">month</span></span></li>
+              </ul>
+            </div>
+
+            <form class="goal-editor" id="goalEditor" hidden>
+              <label for="goalInput">Monthly profit goal</label>
+              <div class="goal-fields">
+                <div class="goal-input">
+                  <span aria-hidden="true">$</span>
+                  <input id="goalInput" type="number" inputmode="decimal" min="1" step="any" aria-describedby="goalHint">
+                </div>
+                <button type="button" class="btn-secondary" id="goalReset">Reset to automatic</button>
+                <button type="submit" class="btn-primary" id="goalSave">Save goal</button>
+              </div>
+              <p class="goal-hint" id="goalHint" aria-live="polite"></p>
+              <button type="button" class="goal-close" id="goalClose" aria-label="Close goal editor">×</button>
+            </form>
+          </div>
+        </section>
+        <div class="summary-row">
+          <div class="stat income">
+            <div class="label">Income</div>
+            <div class="value" id="sumIncome">$0</div>
+          </div>
+          <div class="stat expense">
+            <div class="label">Expenses</div>
+            <div class="value" id="sumExpense">$0</div>
+          </div>
+        </div>
+        <section class="stat trend" id="trend" aria-labelledby="trendTitle">
+          <div class="trend-head">
+            <h2 id="trendTitle">Day by day</h2>
+            <span class="trend-range" id="trendRange"></span>
+          </div>
+          <div class="trend-charts">
+            <figure class="spark income" id="sparkIncome"></figure>
+            <figure class="spark expense" id="sparkExpense"></figure>
+          </div>
+        </section>
+      </div>
+
+      <div class="layout">
+        <section class="ledger">
+          <h2>Entries</h2>
+          <button class="add-toggle" id="addToggle">+ Add transaction</button>
+
+          <form class="entry" id="entryForm">
+            <div class="type-toggle">
+              <button type="button" class="active expense" id="typeExpense" data-type="expense">Expense</button>
+              <button type="button" class="income" id="typeIncome" data-type="income">Income</button>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="fAmount">Amount</label>
+                <input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00" required>
+              </div>
+              <div class="field">
+                <label for="fDate">Date</label>
+                <input type="date" id="fDate" required>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="fCategory">Category</label>
+                <span class="select-wrap"><select id="fCategory"></select></span>
+              </div>
+              <div class="field">
+                <label for="fNote">Note</label>
+                <input type="text" id="fNote" placeholder="Optional">
+              </div>
+            </div>
+            <div class="form-actions">
+              <span class="form-error" id="formError"></span>
+              <button type="button" class="btn-secondary" id="cancelEntry">Cancel</button>
+              <button type="submit" class="btn-primary" id="saveEntryBtn">Save entry</button>
+            </div>
+          </form>
+
+          <table class="tx" id="txTable">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Category</th>
+                <th>Note</th>
+                <th>Added by</th>
+                <th class="amt">Amount</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="txBody"></tbody>
+          </table>
+          <div class="empty" id="emptyState" style="display:none;">No entries for this period yet. Add your first transaction above.</div>
+        </section>
+
+        <aside>
+          <h2>By category</h2>
+          <div class="toggle-set" id="breakdownToggle">
+            <button class="active" data-t="expense">Expenses</button>
+            <button data-t="income">Income</button>
+          </div>
+          <div class="breakdown" id="breakdown"></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
