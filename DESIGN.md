@@ -234,7 +234,33 @@ ticks. Plain HTML/CSS grid, no chart library.
 - Selects use the same CSS chevron as the header dropdowns (`.select-wrap`), not the
   native arrow.
 - On mobile, inputs and selects are 16px (iOS zooms the page on focus below that).
+- **iOS Safari date inputs:** iOS draws `input[type=date]` as a native control with its own
+  minimum width, so it ignores `width: 100%` and sticks out wider than the other fields.
+  The fix is `appearance: none` on date inputs, scoped with
+  `@supports (-webkit-touch-callout: none)` (iOS only), plus `min-width: 0` on every field.
+  Desktop and Android Chromium never had the problem, so check this on a real iPhone.
 - The error line takes its own full-width row and is hidden while empty.
+- The default date is the **local** date (`dayKey(new Date())`), never `toISOString()`,
+  which is UTC and already "tomorrow" on US evenings.
+
+### Categories
+
+- **Grouped, Plaid-style:** `CATEGORIES` in `src/main.js` has 12 expense groups (48
+  categories) and 3 income groups (10). The native select shows them with `<optgroup>`
+  headers, which gives the grouped wheel picker on iPhone. Search was deliberately not
+  added: it only pays off past ~60 items.
+- **No preselected category:** the select starts on a disabled "Choose a category" and is
+  `required`, so nothing gets filed under whatever happened to be first in the list.
+- **Recent-category chips** (up to 5, the household's newest first, for the current
+  Expense/Income type) sit on a full-width row above Category/Note. Tapping one sets the
+  select. Chips share height and padding, their widths follow the label (a pick-list,
+  not a toggle), and the selected chip uses the toggles' ink/paper fill. Old category
+  names never appear as chips.
+- Transactions store the category **name** as text. Renaming or regrouping means adding a
+  dated `update transactions …` block to `supabase/schema.sql` (see MIGRATION
+  2026-09-27), so old entries move with it.
+- Category names come from the database when rendered, so always pass them through
+  `escapeHtml()`.
 
 ### Auth and onboarding screens
 
@@ -263,6 +289,20 @@ status screen (invite results, load errors) all use the centred `.auth-card` (ma
 - The in-app **Invite partner** panel is an inline card under the sync bar, not a modal:
   a read-only link field, then **Share… / Copy link** as an equal pair (just Copy link
   where the browser has no share sheet).
+
+### Deleting an entry
+
+- "Delete" (only on your own entries) opens a confirmation **native `<dialog>`**
+  (`.confirm-dialog`), which gives focus trapping, Esc and a backdrop for free.
+  Clicking the backdrop also cancels.
+- The dialog restates the entry ("Gas · -$45.00 · Sep 14") and says it also disappears
+  for your partner. **Cancel is focused first** so a reflexive Enter never deletes.
+- Cancel / Delete are an equal pair. Delete uses `.btn-danger` (`--rust` fill, white text,
+  4.8:1), which shares the button box model with `.btn-primary`/`.btn-secondary`.
+- The row is removed from the list **as soon as the database confirms**. Supabase Realtime
+  doesn't deliver DELETE events on a filtered channel, so the app never waits for one. To
+  pick up deletes made on your partner's device, transactions are re-fetched whenever the
+  app returns to the foreground.
 
 ### Period selector
 

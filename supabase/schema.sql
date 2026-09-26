@@ -407,3 +407,31 @@ grant execute on function redeem_invite(text) to authenticated;
 --
 -- drop function if exists join_household(text);
 -- alter table households drop column if exists invite_code;
+
+-- MIGRATION 2026-09-27: grouped category names ------------------------------------
+-- Moves existing transactions from the old flat category names to the new grouped
+-- list (see CATEGORIES in src/main.js). Only rows still using an old name change;
+-- safe to re-run. Changes nothing but the category text.
+--
+-- Preview first (read-only) — how many entries each rename will touch:
+--   select type, category, count(*) from transactions
+--   where (type, category) in (
+--     ('expense','Rent & Housing'), ('expense','Transport'), ('expense','Utilities'),
+--     ('expense','Subscriptions'), ('expense','Dining & Entertainment'),
+--     ('expense','Health & Fitness'), ('expense','Software & Tools'),
+--     ('income','Investment'), ('income','Gifts'))
+--   group by 1, 2 order by 1, 2;
+update transactions t
+set category = m.new_name
+from (values
+  ('expense', 'Rent & Housing',         'Rent / Mortgage'),
+  ('expense', 'Transport',              'Other transportation'),
+  ('expense', 'Utilities',              'Other bills'),
+  ('expense', 'Subscriptions',          'Subscriptions & streaming'),
+  ('expense', 'Dining & Entertainment', 'Restaurants & takeout'),
+  ('expense', 'Health & Fitness',       'Other health'),
+  ('expense', 'Software & Tools',       'Software & tools'),
+  ('income',  'Investment',             'Investments & interest'),
+  ('income',  'Gifts',                  'Gifts received')
+) as m(type, old_name, new_name)
+where t.type = m.type and t.category = m.old_name;

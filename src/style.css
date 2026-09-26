@@ -84,7 +84,7 @@ body {
 }
 .auth-card input:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
 /* Buttons shown as a pair share one box model; only fill, colour and width may differ. */
-.btn-primary, .btn-secondary {
+.btn-primary, .btn-secondary, .btn-danger {
   font-family: 'Plus Jakarta Sans', sans-serif;
   font-size: 14px; font-weight: 600; line-height: 1.25;
   padding: 10px 18px;
@@ -96,6 +96,29 @@ body {
 .btn-primary:disabled { opacity: 0.6; cursor: wait; }
 .btn-secondary { background: none; border-color: var(--line); color: var(--text-dim); }
 .btn-secondary:hover { border-color: var(--text-dim); color: var(--text); }
+/* Destructive action: white on --rust is 4.8:1. */
+.btn-danger { background: var(--rust); color: #fff; }
+.btn-danger:hover { background: #B91C1C; }
+.btn-danger:disabled { opacity: 0.6; cursor: wait; }
+
+/* Confirmation dialog (native <dialog>, so focus trap and Esc come for free). */
+.confirm-dialog {
+  width: calc(100% - 32px); max-width: 380px; padding: 0;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--raised); color: var(--text);
+  box-shadow: 0 24px 48px -16px rgb(15 23 42 / 0.45);
+}
+.confirm-dialog::backdrop { background: rgb(11 17 32 / 0.55); }
+.confirm-form { padding: 22px 20px 20px; }
+.confirm-title { margin: 0 0 12px; font-size: 18px; font-weight: 700; }
+.confirm-entry {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--paper-2);
+  font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.confirm-note { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-dim); }
+.confirm-form .hint { margin-top: 12px; }
+.confirm-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.confirm-actions button { width: 100%; min-height: 40px; padding-block: 6px; }
 .hint { font-size: 13px; line-height: 1.45; color: var(--text-dim); margin: 14px 0 0; min-height: 16px; }
 .hint:empty { min-height: 0; margin: 0; }
 /* Small red text fails contrast in dark mode, so errors are dark text with a red rule. */
@@ -402,12 +425,39 @@ form.entry .form-error { grid-column: 1 / -1; }
 .field label { font-size: 12px; font-weight: 500; color: var(--text-dim); }
 .field .select-wrap { display: flex; }
 .field input, .field select {
-  width: 100%; height: 40px; padding: 0 12px;
+  width: 100%; min-width: 0; max-width: 100%; height: 40px; padding: 0 12px;
   font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; background: var(--paper);
 }
 .field select { appearance: none; -webkit-appearance: none; color-scheme: light dark; padding-right: 32px; cursor: pointer; }
 .field input:focus, .field select:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+/* iOS Safari draws date inputs as a native control with its own minimum width, so they
+   ignore width: 100% and poke out wider than the other fields. Dropping the native
+   appearance makes them size like every other input; the tap still opens the iOS picker.
+   Scoped to iOS (only iOS WebKit supports -webkit-touch-callout). */
+@supports (-webkit-touch-callout: none) {
+  .field input[type="date"] {
+    -webkit-appearance: none; appearance: none;
+    display: block; line-height: 38px;
+  }
+  .field input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+}
+/* Recent-category chips: one tap fills the Category select. Equal height and padding;
+   widths follow the label (they're a pick-list, not a toggle). The pressed state uses the
+   same ink/paper fill as the segmented toggles. */
+form.entry .cat-recent { grid-column: 1 / -1; display: grid; gap: 6px; }
+.cat-recent[hidden] { display: none; }
+.cat-recent-label { font-size: 12px; font-weight: 500; color: var(--text-dim); }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.cat-chip {
+  height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper); color: var(--text); cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 600; line-height: 1;
+}
+.cat-chip:hover { border-color: var(--brass); }
+.cat-chip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.cat-chip:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
 .form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
 .form-actions button { width: 100%; height: 40px; padding-block: 0; }
 .form-error { font-size: 12px; color: var(--rust); }

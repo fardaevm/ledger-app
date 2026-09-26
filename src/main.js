@@ -1,8 +1,29 @@
 import "./style.css";
 import { supabase } from "./supabaseClient.js";
 
-const EXPENSE_CATS = ["Rent & Housing","Groceries","Transport","Utilities","Subscriptions","Dining & Entertainment","Shopping","Health & Fitness","Travel","Software & Tools","Other"];
-const INCOME_CATS = ["Salary","Freelance","Business","Investment","Gifts","Other"];
+// Categories, grouped the way bank-data providers (e.g. Plaid) do. Each transaction stores
+// the plain category name; renaming one needs a migration in supabase/schema.sql.
+const CATEGORIES = {
+  expense: [
+    ["Housing", ["Rent / Mortgage", "Home maintenance", "Furniture & home goods"]],
+    ["Bills & Utilities", ["Electricity & gas", "Water & trash", "Internet & phone", "Subscriptions & streaming", "Software & tools", "Home & renters insurance", "Other bills"]],
+    ["Food", ["Groceries", "Restaurants & takeout", "Coffee"]],
+    ["Transportation", ["Fuel", "Public transit", "Rideshare & taxi", "Parking & tolls", "Car payment", "Car insurance", "Car maintenance", "Other transportation"]],
+    ["Health", ["Medical & dental", "Pharmacy", "Fitness", "Health insurance", "Other health"]],
+    ["Personal Care", ["Laundry & dry cleaning", "Hair & beauty", "Clothing"]],
+    ["Education", ["Tuition", "Books & supplies", "Courses"]],
+    ["Family", ["Childcare", "Kids' activities", "Pets"]],
+    ["Shopping & Fun", ["Shopping", "Entertainment", "Travel", "Gifts given"]],
+    ["Fees & Fines", ["Tickets & citations", "Late fees", "Bank fees", "Government fees"]],
+    ["Financial", ["Loan & card payments", "Taxes", "Life insurance", "Donations"]],
+    ["Other", ["Other"]]
+  ],
+  income: [
+    ["Work", ["Salary", "Freelance", "Rideshare & delivery driving", "Business"]],
+    ["Other money in", ["Marketplace sales", "Investments & interest", "Refunds & reimbursements", "Gifts received", "Benefits"]],
+    ["Other", ["Other"]]
+  ]
+};
 
 const $ = (id) => document.getElementById(id);
 const view = {
@@ -410,9 +431,59 @@ $("inviteShare").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 function populateCategorySelect() {
   const sel = $("fCategory");
-  const cats = state.formType === "expense" ? EXPENSE_CATS : INCOME_CATS;
-  sel.innerHTML = cats.map((c) => `<option value="${c}">${c}</option>`).join("");
+  // No preselected category: a deliberate choice (or a recent chip) beats a wrong default.
+  const placeholder = new Option("Choose a category", "", true, true);
+  placeholder.disabled = true;
+  sel.replaceChildren(placeholder);
+  for (const [group, names] of CATEGORIES[state.formType]) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group;
+    names.forEach((name) => optgroup.append(new Option(name, name)));
+    sel.append(optgroup);
+  }
+  renderCategoryChips();
 }
+
+// The household's most recently used categories for this type, newest first.
+function recentCategories(type, limit = 5) {
+  const valid = new Set(CATEGORIES[type].flatMap(([, names]) => names));
+  const recent = [];
+  const newestFirst = [...state.tx].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  for (const t of newestFirst) {
+    if (t.type === type && valid.has(t.category) && !recent.includes(t.category)) recent.push(t.category);
+    if (recent.length === limit) break;
+  }
+  return recent;
+}
+
+function renderCategoryChips() {
+  const recent = recentCategories(state.formType);
+  $("catRecent").hidden = recent.length === 0;
+  $("catChips").replaceChildren(
+    ...recent.map((name) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "cat-chip";
+      chip.dataset.cat = name;
+      chip.textContent = name;
+      return chip;
+    })
+  );
+  syncCategoryChips();
+}
+
+function syncCategoryChips() {
+  const value = $("fCategory").value;
+  $("catChips").querySelectorAll(".cat-chip").forEach((chip) => chip.setAttribute("aria-pressed", String(chip.dataset.cat === value)));
+}
+
+$("catChips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".cat-chip");
+  if (!chip) return;
+  $("fCategory").value = chip.dataset.cat;
+  syncCategoryChips();
+});
+$("fCategory").addEventListener("change", syncCategoryChips);
 
 // t.date is "YYYY-MM-DD", so prefix matching filters by period without timezone math.
 function filteredTx() {
@@ -514,11 +585,11 @@ function render() {
       return `
         <tr>
           <td class="tx-date">${dateStr}</td>
-          <td class="tx-cat">${t.category}</td>
+          <td class="tx-cat">${escapeHtml(t.category)}</td>
           <td class="tx-note">${t.note ? escapeHtml(t.note) : '<span style="color:var(--text-dim)">—</span>'}</td>
           <td class="tx-who">${escapeHtml(who)}</td>
           <td class="tx-amt ${t.type}">${t.type === "expense" ? "-" : "+"}${fmtMoney(Math.abs(Number(t.amount)))}</td>
-          <td>${canDelete ? `<button class="tx-del" data-id="${t.id}">Delete</button>` : ""}</td>
+          <td>${canDelete ? `<button class="tx-del" data-id="${escapeHtml(String(t.id))}" aria-label="Delete ${escapeHtml(t.note || t.category)}, ${dateStr}">Delete</button>` : ""}</td>
         </tr>`;
     }).join("");
   }
@@ -777,7 +848,7 @@ function renderBreakdown(list) {
     const pct = max ? Math.round((amt / max) * 100) : 0;
     return `
       <div class="bar-row">
-        <div class="bar-top"><span>${cat}</span><span class="amt">${fmtMoney(amt)}</span></div>
+        <div class="bar-top"><span>${escapeHtml(cat)}</span><span class="amt">${fmtMoney(amt)}</span></div>
         <div class="bar-track"><div class="bar-fill ${type}" style="width:${pct}%"></div></div>
       </div>`;
   }).join("");
@@ -799,13 +870,16 @@ const form = $("entryForm");
 const addToggle = $("addToggle");
 addToggle.addEventListener("click", () => {
   form.classList.add("open");
-  $("fDate").value = new Date().toISOString().slice(0, 10);
+  // Local date, not toISOString() (UTC), which is already "tomorrow" on US evenings.
+  $("fDate").value = dayKey(new Date());
   $("formError").textContent = "";
+  renderCategoryChips();
   $("fAmount").focus();
 });
 $("cancelEntry").addEventListener("click", () => {
   form.classList.remove("open");
   form.reset();
+  syncCategoryChips();
 });
 $("typeExpense").addEventListener("click", () => setFormType("expense"));
 $("typeIncome").addEventListener("click", () => setFormType("income"));
@@ -840,6 +914,7 @@ form.addEventListener("submit", async (e) => {
     const { error } = await supabase.from("transactions").insert(payload);
     if (error) throw error;
     form.reset();
+    syncCategoryChips();
     form.classList.remove("open");
     state.selectedMonth = payload.date.slice(0, 7);
     state.selectedYear = Number(payload.date.slice(0, 4));
@@ -850,10 +925,46 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-$("txBody").addEventListener("click", async (e) => {
-  if (!e.target.classList.contains("tx-del")) return;
-  const id = e.target.getAttribute("data-id");
-  await supabase.from("transactions").delete().eq("id", id);
+// Delete: confirm in a native <dialog> (focus trap, Esc and screen-reader support built in).
+const deleteDialog = $("confirmDelete");
+let pendingDeleteId = null;
+
+$("txBody").addEventListener("click", (e) => {
+  const btn = e.target.closest(".tx-del");
+  if (!btn) return;
+  const t = state.tx.find((x) => String(x.id) === btn.dataset.id);
+  if (!t) return;
+  pendingDeleteId = t.id;
+  const date = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const amount = (t.type === "expense" ? "-" : "+") + fmtMoney(Math.abs(Number(t.amount)));
+  $("confirmDeleteText").textContent = `${t.note || t.category} · ${amount} · ${date}`;
+  setHint("confirmDeleteHint", "");
+  setBusy("confirmDeleteBtn", false);
+  deleteDialog.showModal();
+});
+
+$("confirmDeleteBtn").addEventListener("click", async () => {
+  if (pendingDeleteId === null) return;
+  const id = pendingDeleteId;
+  setBusy("confirmDeleteBtn", true);
+  const { error } = await supabase.from("transactions").delete().eq("id", id);
+  setBusy("confirmDeleteBtn", false);
+  if (error) {
+    return setHint("confirmDeleteHint", "Couldn't delete this entry. Check your connection and try again.", true);
+  }
+  // Supabase Realtime can't deliver DELETE events on a filtered channel, so the list
+  // never heard about the delete; update it here once the database has confirmed.
+  state.tx = state.tx.filter((t) => t.id !== id);
+  deleteDialog.close();
+  render();
+});
+
+// A click on the dialog element itself (not its form) is a click on the backdrop.
+deleteDialog.addEventListener("click", (e) => {
+  if (e.target === deleteDialog) deleteDialog.close();
+});
+deleteDialog.addEventListener("close", () => {
+  pendingDeleteId = null;
 });
 
 $("breakdownToggle").addEventListener("click", (e) => {
@@ -864,25 +975,35 @@ $("breakdownToggle").addEventListener("click", (e) => {
   render();
 });
 
-async function startLedger() {
-  populateCategorySelect();
-  renderPeriodControls();
-  setSyncStatus("connecting");
-
+async function fetchTransactions() {
   const { data, error } = await supabase
     .from("transactions")
     .select("*")
     .eq("household_id", state.household.id)
     .order("date", { ascending: false })
     .limit(1000);
+  if (error) return false;
+  state.tx = data;
+  return true;
+}
 
-  if (error) {
+// Realtime doesn't send DELETE events on our filtered channel, so a partner's deletes
+// would otherwise only show after a reload. Re-sync whenever the app comes back into view.
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && state.household && (await fetchTransactions())) render();
+});
+
+async function startLedger() {
+  populateCategorySelect();
+  renderPeriodControls();
+  setSyncStatus("connecting");
+
+  if (!(await fetchTransactions())) {
     setSyncStatus("off");
     $("permBanner").style.display = "block";
     $("permBanner").textContent = "Couldn't load transactions. Reload to try again.";
     return;
   }
-  state.tx = data;
   setSyncStatus("live");
   render();
 
