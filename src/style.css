@@ -101,24 +101,8 @@ body {
 .btn-danger:hover { background: #B91C1C; }
 .btn-danger:disabled { opacity: 0.6; cursor: wait; }
 
-/* Confirmation dialog (native <dialog>, so focus trap and Esc come for free). */
-.confirm-dialog {
-  width: calc(100% - 32px); max-width: 380px; padding: 0;
-  border: 1px solid var(--line); border-radius: 12px;
-  background: var(--raised); color: var(--text);
-  box-shadow: 0 24px 48px -16px rgb(15 23 42 / 0.45);
-}
-.confirm-dialog::backdrop { background: rgb(11 17 32 / 0.55); }
-.confirm-form { padding: 22px 20px 20px; }
-.confirm-title { margin: 0 0 12px; font-size: 18px; font-weight: 700; }
-.confirm-entry {
-  margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--paper-2);
-  font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
-}
-.confirm-note { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-dim); }
-.confirm-form .hint { margin-top: 12px; }
-.confirm-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
-.confirm-actions button { width: 100%; min-height: 40px; padding-block: 6px; }
+/* Compact size for buttons inside table rows; same box model, smaller. */
+.btn-primary.btn-sm, .btn-secondary.btn-sm, .btn-danger.btn-sm { height: 32px; padding: 0 12px; font-size: 13px; }
 .hint { font-size: 13px; line-height: 1.45; color: var(--text-dim); margin: 14px 0 0; min-height: 16px; }
 .hint:empty { min-height: 0; margin: 0; }
 /* Small red text fails contrast in dark mode, so errors are dark text with a red rule. */
@@ -477,6 +461,29 @@ table.tx tbody tr:hover { background: var(--paper-2); }
 .tx-amt.expense { color: var(--rust); }
 .tx-del { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 0 0 0 10px; text-decoration: underline; }
 .tx-del:hover { color: var(--rust); }
+.tx-del:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 2px; }
+
+/* Inline delete confirmation. The pair floats over the row's right edge (anchored to the
+   action cell on desktop, to the whole row on mobile); the invisible spacer keeps the
+   cell's width, so no column resizes and no other row moves. */
+table.tx td.tx-actions { position: relative; white-space: nowrap; }
+.tx-del-spacer { visibility: hidden; }
+.tx-confirm {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 2;
+  /* 1fr (not minmax(0, 1fr)): an absolutely positioned grid shrinks to fit, so the
+     columns must keep their content width. Equal fr = both buttons as wide as the wider. */
+  display: grid; grid-template-columns: 1fr 1fr; width: max-content; gap: 8px;
+  padding: 4px 0 4px 16px;
+  background: linear-gradient(to right, transparent, var(--paper) 16px);
+}
+table.tx tbody tr:hover .tx-confirm { background: linear-gradient(to right, transparent, var(--paper-2) 16px); }
+.tx-confirm button { width: 100%; white-space: nowrap; }
+.tx-confirm button:disabled { opacity: 0.6; cursor: wait; }
+.tx-confirm-error {
+  grid-column: 1 / -1; white-space: normal; max-width: 240px; justify-self: end;
+  padding: 4px 0 0 10px; border-left: 3px solid var(--rust);
+  font-size: 12px; font-weight: 600; line-height: 1.35; color: var(--text); background: var(--paper);
+}
 
 .empty { padding: 30px 8px; color: var(--text-dim); font-size: 14px; border: 1px dashed var(--line); border-radius: 8px; text-align: center; }
 
@@ -586,6 +593,9 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
   .tx-who { grid-area: who; }
   .tx-who::before { content: "· "; color: var(--text-dim); }
   table.tx tbody td:last-child { grid-area: del; text-align: right; }
+  /* Stacked rows: centre the confirm pair on the whole row, over amount + Delete. */
+  table.tx tbody tr { position: relative; }
+  table.tx td.tx-actions { position: static; }
 
   section.ledger h2 { margin-bottom: 4px; }
   form.entry.open { margin: 12px 0 24px; }

@@ -292,17 +292,26 @@ status screen (invite results, load errors) all use the centred `.auth-card` (ma
 
 ### Deleting an entry
 
-- "Delete" (only on your own entries) opens a confirmation **native `<dialog>`**
-  (`.confirm-dialog`), which gives focus trapping, Esc and a backdrop for free.
-  Clicking the backdrop also cancels.
-- The dialog restates the entry ("Gas · -$45.00 · Sep 14") and says it also disappears
-  for your partner. **Cancel is focused first** so a reflexive Enter never deletes.
-- Cancel / Delete are an equal pair. Delete uses `.btn-danger` (`--rust` fill, white text,
-  4.8:1), which shares the button box model with `.btn-primary`/`.btn-secondary`.
-- The row is removed from the list **as soon as the database confirms**. Supabase Realtime
-  doesn't deliver DELETE events on a filtered channel, so the app never waits for one. To
-  pick up deletes made on your partner's device, transactions are re-fetched whenever the
-  app returns to the foreground.
+- **Who can delete:** a row shows "Delete" only when `author_id` equals the signed-in user's
+  id. Your partner's entries never show it, and the database enforces the same rule
+  ("authors delete their own transactions"). If no row shows Delete, check *which account*
+  you're signed in as before touching this logic.
+- **Inline confirmation, no modal, no `confirm()`:** clicking Delete swaps that row's action
+  for **Cancel** (`.btn-secondary`) and **Confirm delete** (`.btn-danger`, the `--rust` fill).
+  They're an equal pair (both as wide as the wider, 32px tall via `.btn-sm`). Cancel gets
+  focus, so a reflexive Enter never deletes.
+- **No layout shift:** the pair is absolutely positioned over the row's right edge (the action
+  cell on desktop, the whole stacked row on mobile), and an invisible Delete button keeps the
+  cell's width. A `<button>`, not a `<span>`, because buttons don't inherit the page font and
+  the widths would differ.
+- **One row at a time;** clicking anywhere else, or Esc, reverts it. Cancel and Esc return
+  focus to that row's Delete. If the delete fails, the row stays in confirming mode with a
+  message (dark text with a red rule, per the error style).
+- **The row is removed as soon as the database confirms.** Supabase Realtime doesn't deliver
+  DELETE events on a filtered channel, so the app doesn't wait for one. Your partner's deletes
+  arrive when the app returns to the foreground (transactions are re-fetched then).
+- There is exactly one delete path in the app (`deleteTransaction()` in `src/main.js`); any
+  new one must go through the same confirmation.
 
 ### Period selector
 

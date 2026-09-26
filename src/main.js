@@ -71,6 +71,8 @@ const state = {
   selectedYear: currentYear(),
   formType: "expense",
   breakdownType: "expense",
+  confirmingDeleteId: null, // row whose Delete is showing Cancel / Confirm delete
+  deleteErrorId: null,
   realtimeChannel: null
 };
 
@@ -589,7 +591,7 @@ function render() {
           <td class="tx-note">${t.note ? escapeHtml(t.note) : '<span style="color:var(--text-dim)">—</span>'}</td>
           <td class="tx-who">${escapeHtml(who)}</td>
           <td class="tx-amt ${t.type}">${t.type === "expense" ? "-" : "+"}${fmtMoney(Math.abs(Number(t.amount)))}</td>
-          <td>${canDelete ? `<button class="tx-del" data-id="${escapeHtml(String(t.id))}" aria-label="Delete ${escapeHtml(t.note || t.category)}, ${dateStr}">Delete</button>` : ""}</td>
+          <td class="tx-actions"${canDelete ? ` data-actions-for="${escapeHtml(String(t.id))}"` : ""}>${canDelete ? actionsHtml(t, dateStr) : ""}</td>
         </tr>`;
     }).join("");
   }
@@ -925,46 +927,84 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-// Delete: confirm in a native <dialog> (focus trap, Esc and screen-reader support built in).
-const deleteDialog = $("confirmDelete");
-let pendingDeleteId = null;
+// ---------------------------------------------------------------------------
+// inline delete confirmation — the only way a transaction gets deleted
+// ---------------------------------------------------------------------------
+const txById = (id) => state.tx.find((t) => String(t.id) === String(id));
+const actionsCell = (id) => $("txBody").querySelector(`[data-actions-for="${CSS.escape(String(id))}"]`);
 
-$("txBody").addEventListener("click", (e) => {
-  const btn = e.target.closest(".tx-del");
-  if (!btn) return;
-  const t = state.tx.find((x) => String(x.id) === btn.dataset.id);
-  if (!t) return;
-  pendingDeleteId = t.id;
-  const date = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const amount = (t.type === "expense" ? "-" : "+") + fmtMoney(Math.abs(Number(t.amount)));
-  $("confirmDeleteText").textContent = `${t.note || t.category} · ${amount} · ${date}`;
-  setHint("confirmDeleteHint", "");
-  setBusy("confirmDeleteBtn", false);
-  deleteDialog.showModal();
-});
+// A row's action cell: "Delete", or Cancel / Confirm delete while it's being confirmed.
+// The confirm buttons float over the row's right edge, and an invisible "Delete" keeps the
+// cell's width, so no column resizes and nothing else on the page moves.
+function actionsHtml(t, dateStr) {
+  const label = escapeHtml(`${t.note || t.category}, ${dateStr}`);
+  const id = escapeHtml(String(t.id));
+  if (state.confirmingDeleteId !== String(t.id)) {
+    return `<button class="tx-del" data-id="${id}" aria-label="Delete ${label}">Delete</button>`;
+  }
+  const failed = state.deleteErrorId === String(t.id);
+  // The spacer is the same element type as the real link (buttons don't inherit the page
+  // font), so it occupies exactly the same width.
+  return `<button type="button" class="tx-del tx-del-spacer" tabindex="-1" aria-hidden="true" disabled>Delete</button>
+    <span class="tx-confirm" role="group" aria-label="Delete ${label}?">
+      <button type="button" class="btn-secondary btn-sm tx-cancel" data-id="${id}">Cancel</button>
+      <button type="button" class="btn-danger btn-sm tx-confirm-del" data-id="${id}">Confirm delete</button>
+      ${failed ? `<span class="tx-confirm-error" role="alert">Couldn't delete. Check your connection and try again.</span>` : ""}
+    </span>`;
+}
 
-$("confirmDeleteBtn").addEventListener("click", async () => {
-  if (pendingDeleteId === null) return;
-  const id = pendingDeleteId;
-  setBusy("confirmDeleteBtn", true);
+function refreshRowActions(id) {
+  const t = txById(id);
+  const cell = actionsCell(id);
+  if (!t || !cell) return;
+  const dateStr = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  cell.innerHTML = actionsHtml(t, dateStr);
+}
+
+// Only one row confirms at a time: starting a new one (or cancelling) reverts the old one.
+function setConfirming(id, focus) {
+  const prev = state.confirmingDeleteId;
+  state.confirmingDeleteId = id === null ? null : String(id);
+  state.deleteErrorId = null;
+  if (prev !== null && prev !== state.confirmingDeleteId) refreshRowActions(prev);
+  if (state.confirmingDeleteId !== null) refreshRowActions(state.confirmingDeleteId);
+  if (focus === "cancel") actionsCell(id)?.querySelector(".tx-cancel")?.focus();
+  if (focus === "delete" && prev !== null) actionsCell(prev)?.querySelector(".tx-del:not(.tx-del-spacer)")?.focus();
+}
+
+async function deleteTransaction(id) {
+  actionsCell(id)?.querySelectorAll("button").forEach((b) => (b.disabled = true));
   const { error } = await supabase.from("transactions").delete().eq("id", id);
-  setBusy("confirmDeleteBtn", false);
   if (error) {
-    return setHint("confirmDeleteHint", "Couldn't delete this entry. Check your connection and try again.", true);
+    state.deleteErrorId = String(id);
+    return refreshRowActions(id);
   }
   // Supabase Realtime can't deliver DELETE events on a filtered channel, so the list
-  // never heard about the delete; update it here once the database has confirmed.
-  state.tx = state.tx.filter((t) => t.id !== id);
-  deleteDialog.close();
+  // never hears about the delete; update it here once the database has confirmed.
+  state.tx = state.tx.filter((t) => String(t.id) !== String(id));
+  state.confirmingDeleteId = null;
+  state.deleteErrorId = null;
   render();
+}
+
+$("txBody").addEventListener("click", (e) => {
+  const del = e.target.closest("button.tx-del:not(.tx-del-spacer)");
+  const cancel = e.target.closest(".tx-cancel");
+  const confirm = e.target.closest(".tx-confirm-del");
+  if (!del && !cancel && !confirm) return;
+  // Handled here; keep the page-level "click elsewhere cancels" listener out of it.
+  e.stopPropagation();
+  if (del) return setConfirming(txById(del.dataset.id)?.id ?? null, "cancel");
+  if (cancel) return setConfirming(null, "delete");
+  deleteTransaction(txById(confirm.dataset.id)?.id);
 });
 
-// A click on the dialog element itself (not its form) is a click on the backdrop.
-deleteDialog.addEventListener("click", (e) => {
-  if (e.target === deleteDialog) deleteDialog.close();
+// Safety nets: clicking anywhere else, or pressing Esc, cancels a pending delete.
+document.addEventListener("click", (e) => {
+  if (state.confirmingDeleteId !== null && !e.target.closest(".tx-confirm")) setConfirming(null);
 });
-deleteDialog.addEventListener("close", () => {
-  pendingDeleteId = null;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.confirmingDeleteId !== null) setConfirming(null, "delete");
 });
 
 $("breakdownToggle").addEventListener("click", (e) => {
