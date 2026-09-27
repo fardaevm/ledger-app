@@ -109,11 +109,11 @@ body {
 .hint.error { color: var(--text); font-weight: 600; border-left: 3px solid var(--rust); padding-left: 10px; }
 
 /* Segmented toggles: equal-width halves, identical type in every state. */
-.auth-tabs, .type-toggle, aside .toggle-set {
+.auth-tabs, .type-toggle, aside .toggle-set, .filter-toggle {
   display: flex; width: 100%; gap: 1px; background: var(--line);
   border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
 }
-.auth-tabs button, .type-toggle button, aside .toggle-set button {
+.auth-tabs button, .type-toggle button, aside .toggle-set button, .filter-toggle button {
   flex: 1;
   border: none; background: var(--paper); color: var(--text-dim);
   font-family: 'Plus Jakarta Sans', sans-serif;
@@ -122,7 +122,7 @@ body {
 }
 .auth-tabs { margin-bottom: 20px; }
 .auth-tabs[hidden] { display: none; }
-.auth-tabs button.active { background: var(--ink); color: var(--paper); }
+.auth-tabs button.active, .filter-toggle button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 
 .auth-form { text-align: left; }
 .auth-form[hidden] { display: none; }
@@ -150,9 +150,9 @@ body {
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
 
-/* Invite panel: an inline card under the sync bar, not a modal. */
+/* Invite panel: an inline card next to whichever "Invite partner" opened it, not a modal. */
 .invite-panel {
-  position: relative; display: grid; gap: 10px; margin: -8px 0 20px; padding: 16px;
+  position: relative; display: grid; gap: 10px; margin: 0 0 20px; padding: 16px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--paper-2);
 }
 .invite-panel[hidden] { display: none; }
@@ -169,13 +169,17 @@ body {
 .invite-panel .hint { margin: 0; }
 
 /* ---- main app ---- */
-.wrap { max-width: 1020px; margin: 0 auto; padding: 40px 24px 80px; }
+/* One content width for every view (and the header above them): 820px, centred, with empty
+   space either side on wide screens. It matches the Profit hero: its 760px content cap plus its
+   padding. New views get this for free; don't add per-card max-widths. */
+:root { --content-max: 820px; }
+.wrap { max-width: calc(var(--content-max) + 48px); margin: 0 auto; padding: 40px 24px 80px; }
 
 header.top {
   display: flex; justify-content: space-between; align-items: flex-end;
   flex-wrap: wrap; gap: 16px;
   border-bottom: 2px solid var(--ink);
-  padding-bottom: 18px; margin-bottom: 16px;
+  padding-bottom: 18px; margin-bottom: 28px;
 }
 header.top h1 {
   font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 32px;
@@ -205,19 +209,86 @@ header.top .tagline { font-size: 13px; color: var(--text-dim); margin-top: 4px; 
 .period-nav select:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
 #periodMode { color: var(--text-dim); background: var(--paper-2); }
 
-.sync-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  flex-wrap: wrap; margin-bottom: 24px; font-size: 12px; color: var(--text-dim);
+/* Header order: title, period dropdowns, account icon (mobile moves the icon up beside the title). */
+.top-title { flex: 1 1 auto; min-width: 0; order: 1; }
+.period-nav { order: 2; }
+
+/* Account menu: a person icon in the header opening a dropdown (a disclosure, not role=menu,
+   since it holds a non-interactive identity block and an inline form). All identity and
+   account actions live here, never as header links. */
+.account { position: relative; flex: none; order: 3; }
+.account-btn {
+  display: grid; place-items: center; width: 40px; height: 40px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--raised); color: var(--text); cursor: pointer;
 }
-.sync-status { display: flex; align-items: center; gap: 6px; }
-.sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
-.sync-dot.live { background: var(--green); }
-.sync-dot.off { background: var(--rust); }
-.right-actions { display: flex; gap: 16px; }
-.link-btn {
-  background: none; border: none; color: var(--text-dim); text-decoration: underline;
-  font-size: 12px; cursor: pointer; padding: 0;
+.account-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.account-btn:hover, .account-btn[aria-expanded="true"] { border-color: var(--brass); }
+.account-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.account-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  width: 272px; max-width: calc(100vw - 32px); padding: 6px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 16px 36px -12px rgb(15 23 42 / 0.3);
 }
+.account-menu[hidden] { display: none; }
+.account-menu hr { margin: 6px 0; border: 0; border-top: 1px solid var(--line); }
+.account-id { padding: 8px 10px 6px; }
+.account-name { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.account-email { margin: 2px 0 0; font-size: 13px; color: var(--text-dim); overflow-wrap: anywhere; }
+.account-item {
+  display: flex; align-items: center; width: 100%; min-height: 40px; padding: 0 10px;
+  border: none; border-radius: 6px; background: none; color: var(--text); cursor: pointer; text-align: left;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 600;
+}
+.account-item:hover { background: var(--paper-2); }
+.account-item:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+/* Sign out: de-emphasised, set apart by its own divider. */
+.account-item.account-signout { min-height: 34px; font-size: 13px; font-weight: 500; color: var(--text-dim); }
+.account-item.account-signout:hover { color: var(--text); }
+.name-form { display: grid; gap: 8px; padding: 2px 10px 8px; }
+.name-form[hidden] { display: none; }
+.name-form input {
+  width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--text); font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px;
+}
+.name-form input:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+.name-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.name-actions button { width: 100%; }
+.hint.account-hint { margin: 2px 10px 6px; font-size: 12px; }
+.hint.account-hint:empty { display: none; }
+
+/* Members page */
+.back-btn {
+  display: inline-flex; align-items: center; gap: 4px; height: 36px; margin: 0 0 4px -8px; padding: 0 10px 0 6px;
+  border: none; border-radius: 6px; background: none; color: var(--text-dim); cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 600;
+}
+.back-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.back-btn:hover { color: var(--text); background: var(--paper-2); }
+.back-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+#membersViewTitle:focus { outline: none; } /* focused programmatically on arrival, for screen readers */
+.member-list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.member-list:empty { display: none; }
+.member-row {
+  display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-areas: "avatar name since" "avatar email since";
+  align-items: center; gap: 2px 12px; padding: 12px 14px;
+}
+.member-row + .member-row { border-top: 1px solid var(--line); }
+.member-avatar {
+  grid-area: avatar; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--paper-2); color: var(--text-dim); font-size: 14px; font-weight: 700;
+}
+.member-name { grid-area: name; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 700; color: var(--text); }
+.member-email { grid-area: email; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-dim); }
+.member-since { grid-area: since; margin: 0; font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.you-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--paper-2); color: var(--text-dim); font-size: 11px; font-weight: 600; vertical-align: 2px;
+}
+.members-invite { margin-top: 16px; }
+.members-invite .btn-primary { width: auto; min-width: 180px; }
+#inviteSlotMembers .invite-panel { margin: 16px 0 0; }
 
 .banner {
   border: 1px solid var(--line); background: var(--paper-2); border-radius: 8px;
@@ -372,8 +443,10 @@ header.top .tagline { font-size: 13px; color: var(--text-dim); margin-top: 4px; 
 .spark-axis span:first-child { justify-self: start; }
 .spark-axis span:last-child { justify-self: end; }
 
-.layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 40px; align-items: start; }
-@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+.layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+/* Two columns only when the content column gets its full 820px (sidebar 220 + 868 wrap);
+   narrower, the ledger table would truncate every cell, so By Category moves below it. */
+@media (max-width: 1087px) { .layout { grid-template-columns: minmax(0, 1fr); } }
 
 section.ledger h2, aside h2 {
   font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
@@ -388,18 +461,27 @@ section.ledger h2, aside h2 {
 }
 .add-toggle:hover { background: var(--ink-2); }
 .add-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+/* display: inline-flex above would otherwise override the hidden attribute (e.g. "Add debt"
+   when the debts table doesn't exist yet). */
+.add-toggle[hidden] { display: none; }
 
-/* Entry form: one 2-column grid. Every control is 40px tall, and the Cancel/Save
-   pair sits on the same column lines as the fields. */
-form.entry {
-  display: none; border: 1px solid var(--line); border-radius: 8px;
-  padding: 16px; margin-bottom: 20px; background: var(--paper-2);
+/* Sheet forms (add transaction, recurring rule, debt, payment): one 2-column grid (1 column
+   on phones). Every control is 40px tall, and the Cancel/Save pair sits on the same column
+   lines as the fields. Anything that isn't a field spans both columns. */
+.sheet-form {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px;
+  padding: 8px 20px calc(20px + env(safe-area-inset-bottom, 0px));
 }
-form.entry.open { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
-form.entry .field-row { display: contents; }
-form.entry .type-toggle,
-form.entry .form-actions,
-form.entry .form-error { grid-column: 1 / -1; }
+.sheet-form .field-row { display: contents; }
+.sheet-form .sheet-grip,
+.sheet-form .sheet-head,
+.sheet-form .type-toggle,
+.sheet-form .cat-recent,
+.sheet-form .form-actions,
+.sheet-form .form-error,
+.sheet-form .check-row,
+.sheet-form .field-help,
+.sheet-form > .btn-primary { grid-column: 1 / -1; }
 
 .type-toggle button { height: 38px; padding-block: 0; }
 .type-toggle button.active.expense { background: var(--rust-bg); color: var(--rust); }
@@ -429,7 +511,7 @@ form.entry .form-error { grid-column: 1 / -1; }
 /* Recent-category chips: one tap fills the Category select. Equal height and padding;
    widths follow the label (they're a pick-list, not a toggle). The pressed state uses the
    same ink/paper fill as the segmented toggles. */
-form.entry .cat-recent { grid-column: 1 / -1; display: grid; gap: 6px; }
+.cat-recent { display: grid; gap: 6px; }
 .cat-recent[hidden] { display: none; }
 .cat-recent-label { font-size: 12px; font-weight: 500; color: var(--text-dim); }
 .cat-chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -442,6 +524,38 @@ form.entry .cat-recent { grid-column: 1 / -1; display: grid; gap: 6px; }
 .cat-chip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 .cat-chip:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
+/* Category picker (ARIA combobox). Category and Note each take a full row so the list can open
+   in the flow under the input: a floating list would be clipped by the sheet's scroll area. */
+.sheet-form .picker-field, .sheet-form .note-field { grid-column: 1 / -1; }
+.picker { position: relative; }
+.field .picker-input { padding-right: 36px; text-overflow: ellipsis; }
+.picker-chevron {
+  position: absolute; top: 20px; right: 13px; width: 14px; height: 14px; transform: translateY(-50%);
+  fill: none; stroke: var(--text-dim); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  pointer-events: none; transition: transform 0.15s;
+}
+.picker-input[aria-expanded="true"] ~ .picker-chevron { transform: translateY(-50%) rotate(180deg); }
+.picker-list {
+  margin-top: 6px; max-height: 264px; overflow-y: auto; overscroll-behavior: contain; padding: 4px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
+}
+.picker-list[hidden] { display: none; }
+.picker-group {
+  padding: 10px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-dim);
+}
+.picker-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px;
+  padding: 0 10px; border-radius: 6px; font-size: 14px; color: var(--text); cursor: pointer;
+}
+.picker-option:hover { background: var(--paper-2); }
+/* Keyboard position (aria-activedescendant): tinted row with an accent edge. */
+.picker-option.active { background: var(--paper-2); box-shadow: inset 3px 0 0 var(--brass); }
+/* The current choice: bold, with a check. */
+.picker-option[aria-selected="true"] { font-weight: 700; }
+.picker-option[aria-selected="true"]::after { content: "✓"; color: var(--brass); font-weight: 700; }
+.picker-empty { padding: 12px 10px; font-size: 13px; color: var(--text-dim); }
+
 .form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 2px; }
 .form-actions button { width: 100%; height: 40px; padding-block: 0; }
 .form-error { font-size: 12px; color: var(--rust); }
@@ -450,11 +564,18 @@ form.entry .cat-recent { grid-column: 1 / -1; display: grid; gap: 6px; }
 table.tx { width: 100%; border-collapse: collapse; }
 table.tx thead th { text-align: left; font-size: 11px; color: var(--text-dim); font-weight: 500; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
 table.tx thead th.amt { text-align: right; }
-table.tx tbody td { padding: 11px 8px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: middle; }
+table.tx tbody td { padding: 8px 8px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: middle; }
 table.tx tbody tr:hover { background: var(--paper-2); }
 .tx-date { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tx-cat { color: var(--text-dim); font-size: 12px; }
 .tx-note { color: var(--text); }
+/* Desktop table inside the 820px cap: every row stays one line. Category and note split what's
+   left evenly and truncate (full text in their tooltips). width + max-width: 0 is the table
+   idiom for "share the remaining width, but never force the table wider". */
+@media (min-width: 721px) {
+  table.tx thead th { white-space: nowrap; }
+  .tx-cat, .tx-note { width: 50%; max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 .tx-who { white-space: nowrap; font-size: 12px; color: var(--text-dim); }
 .tx-amt { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 500; }
 .tx-amt.income { color: var(--green); }
@@ -462,6 +583,25 @@ table.tx tbody tr:hover { background: var(--paper-2); }
 .tx-del { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 0 0 0 10px; text-decoration: underline; }
 .tx-del:hover { color: var(--rust); }
 .tx-del:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 2px; }
+
+/* Entries list footer: "Showing …", page numbers (only past 15 entries), Show all / fewer. */
+.tx-footer { display: grid; gap: 12px; justify-items: center; margin-top: 16px; }
+.tx-footer[hidden] { display: none; }
+.tx-range { margin: 0; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.tx-pager { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; }
+/* Every page control is the same 36px square; the current page uses the toggles' ink fill. */
+.pager-btn {
+  width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--text); cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--brass); }
+.pager-btn[aria-current="page"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pager-btn:focus-visible, .tx-more:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.pager-gap { width: 20px; text-align: center; color: var(--text-dim); }
+.tx-more { width: 100%; max-width: 320px; }
+section.ledger h2 { scroll-margin-top: 16px; }
 
 /* Inline delete confirmation. The pair floats over the row's right edge (anchored to the
    action cell on desktop, to the whole row on mobile); the invisible spacer keeps the
@@ -498,9 +638,306 @@ aside .breakdown { display: flex; flex-direction: column; gap: 10px; margin-bott
 aside .toggle-set { margin-bottom: 14px; }
 aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
 
+/* ---- app shell: sidebar navigation + views ---- */
+/* Mobile chrome heights: the tab bar, and the action bar fixed directly above it. Anything
+   that positions itself against the bar (page padding, toasts) uses these, never a number. */
+:root { --tabbar-h: 60px; --actionbar-h: 44px; }
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+.app-nav {
+  position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px;
+  padding: 28px 14px; border-right: 1px solid var(--line); background: var(--paper-2);
+}
+.nav-brand { padding: 0 12px 20px; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--text); }
+.nav-item {
+  display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px;
+  border: none; border-radius: 8px; background: none; color: var(--text-dim); cursor: pointer; text-align: left;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 600;
+}
+.nav-item svg { flex: none; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.nav-item:hover { background: var(--paper); color: var(--text); }
+.nav-item.active { background: var(--ink); color: var(--paper); }
+.nav-item:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+/* Inside the grid, auto margins would shrink .wrap to its content; width 100% keeps it filling
+   the column (still capped at --content-max and centred by those margins). */
+.shell > .wrap { width: 100%; min-width: 0; }
+.period-nav[hidden], .app-view[hidden] { display: none; }
+
+.view-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; }
+.view-title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--text); }
+.view-lead { max-width: 62ch; margin: -6px 0 18px; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
+.form-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); }
+.check-row { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text); cursor: pointer; }
+.check-row[hidden] { display: none; }
+.check-row input { width: 18px; height: 18px; margin: 0; accent-color: var(--brass); }
+.rule-day-help { margin: -6px 0 0; }
+
+/* Transactions toolbar: the add button + type filter (a segmented toggle) + search, sticky so
+   they stay reachable while scrolling a long list. (The add form opens in a sheet, so the
+   toolbar never has to make room for it.) */
+.tx-toolbar {
+  position: sticky; top: 0; z-index: 15; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin-bottom: 6px; padding: 10px 0; border-bottom: 1px solid var(--line); background: var(--paper);
+}
+/* Desktop only: inline in the toolbar, it matches the 40px filter and search. (On mobile it's
+   the fixed action bar, whose size must never depend on the view; this rule once leaked
+   there and made Transactions' bar 4px shorter than the others.) */
+@media (min-width: 721px) {
+  .tx-toolbar .add-toggle { margin-bottom: 0; height: 40px; }
+}
+.tx-tools { display: flex; flex: 1 1 480px; flex-wrap: wrap; align-items: center; gap: 12px; }
+.filter-toggle { flex: 0 0 300px; width: auto; }
+.filter-toggle button { height: 38px; padding-block: 0; }
+.filter-toggle button:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.search-wrap { position: relative; flex: 1 1 220px; }
+.search-wrap svg {
+  position: absolute; left: 12px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%);
+  fill: none; stroke: var(--text-dim); stroke-width: 2; stroke-linecap: round; pointer-events: none;
+}
+.search-wrap input {
+  width: 100%; height: 40px; padding: 0 12px 0 36px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--text); font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px;
+}
+.search-wrap input:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+table.tx[hidden] { display: none; }
+.tx-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--paper-2); color: var(--text-dim); font-size: 11px; font-weight: 600; vertical-align: 1px; white-space: nowrap;
+}
+
+/* Cards: recurring rules and debts */
+.card-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.card-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.card-meta { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--text-dim); }
+.card-meta b { font-weight: 600; color: var(--text); }
+
+/* Recurring rules: one bordered list with dividers, a two-line row per rule, switch on the right. */
+.rule-list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.rule-list:empty { display: none; }
+.rule-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "name amt switch" "meta meta switch";
+  align-items: center; gap: 2px 14px; padding: 10px 8px 10px 14px;
+}
+.rule-row + .rule-row { border-top: 1px solid var(--line); }
+.rule-name { grid-area: name; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 700; color: var(--text); }
+.rule-meta { grid-area: meta; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-dim); }
+.rule-row .rule-amt { grid-area: amt; }
+.rule-row .switch { grid-area: switch; }
+.rule-row.paused .rule-name, .rule-row.paused .rule-amt { opacity: 0.55; }
+.rule-amt { margin: 0; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rule-amt.expense { color: var(--rust); }
+.rule-amt.income { color: var(--green); }
+
+/* Active/paused switch. "On" is the accent colour, not green: green/red are reserved for money. */
+/* 44px tall hit area around the 38×22 track. */
+.switch {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 46px; min-height: 44px; padding: 0 4px;
+  border: none; background: none; cursor: pointer;
+}
+.switch-track { position: relative; flex: none; width: 38px; height: 22px; border-radius: 11px; background: var(--line); transition: background 0.15s; }
+.switch-knob {
+  position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 0.15s;
+}
+.switch[aria-checked="true"] .switch-track { background: var(--brass); }
+.switch[aria-checked="true"] .switch-knob { transform: translateX(16px); }
+.switch:disabled { opacity: 0.55; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 6px; }
+
+/* Debts: a compact row (name/type + balance, bar, actions); details sit behind "More info". */
+.card-list:has(> .debt-card) { gap: 10px; }
+.debt-card { display: grid; gap: 8px; padding: 12px 14px; }
+.debt-card .card-meta { margin: 0; }
+.debt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.debt-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0; }
+.debt-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 700; color: var(--text); }
+/* The debt's type is secondary detail: it heads the "More info" panel, not the card header. */
+.debt-type-label { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+/* Lead with progress: "$X paid off" is the big number; what's left is small and neutral.
+   Paid-off progress is green (positive money); red is only ever the attention flag below. */
+.debt-paidoff { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-dim); white-space: nowrap; }
+.debt-paidoff b { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--text); }
+.debt-progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.debt-progress span { display: block; height: 100%; border-radius: 3px; background: var(--green); }
+/* The one red thing on a debt: a small dot + plain dark text, only past ATTENTION_DAYS. */
+.debt-attention { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+.attention-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--rust); }
+
+/* Debt-free journey: every debt combined as one path from Start to $0. */
+.journey {
+  display: grid; gap: 14px; margin-bottom: 20px; padding: 18px 20px 16px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--raised);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+.journey[hidden] { display: none; }
+/* Headline: the amount paid off. The percentage rides the bar (below), not a corner. */
+.journey-paid { min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--text-dim); }
+.journey-amt {
+  font-size: clamp(28px, 6vw, 36px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.1;
+  font-variant-numeric: tabular-nums; color: var(--green);
+}
+/* Track, milestone dots and the finish flag share one positioned box, so all sit on the line. */
+/* --p is the fill percentage (0–100). Registered so it animates; the fill, the marker and
+   the caret all follow it together. */
+@property --p { syntax: "<number>"; inherits: true; initial-value: 0; }
+.journey-path {
+  position: relative; margin: 6px 9px 0 0;
+  transition: --p 0.7s cubic-bezier(.2, .7, .3, 1);
+}
+.journey-track { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
+.journey-fill { display: block; width: calc(var(--p) * 1%); height: 100%; border-radius: 5px; background: var(--green); }
+.journey-dot, .journey-flag { position: absolute; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; }
+.journey-dot { width: 14px; height: 14px; border: 2px solid var(--line); background: var(--raised); }
+.journey-dot.reached { border-color: var(--raised); background: var(--green); box-shadow: 0 0 0 1px var(--green); }
+/* The finish flag is green, the progress colour, even before it's reached (outlined), and
+   filled once you get to $0. Not a ring colour, and never grey or red. */
+.journey-flag {
+  left: 100%; display: grid; place-items: center; width: 22px; height: 22px;
+  border: 2px solid var(--green); background: var(--raised); color: var(--green);
+}
+.journey-flag svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.journey-flag .pennant { fill: currentColor; }
+.journey-flag.reached { border-color: var(--green); background: var(--green); color: #fff; }
+/* Caption row under the bar: "Start" (a toggle), the percentage under the end of the fill,
+   and "$0" centred under the flag. */
+.journey-labels { position: relative; height: 18px; margin-right: 9px; font-size: 12px; font-weight: 600; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.journey-labels > * { position: absolute; top: 0; white-space: nowrap; line-height: 18px; }
+.journey-labels .end { left: 100%; transform: translateX(-50%); }
+.journey-labels .end.reached { color: var(--text); }
+/* The exact percentage: plain green text. Its left is set by placeJourneyPct(). */
+.journey-pct { left: 0; font-size: 13px; font-weight: 800; color: var(--green); }
+.journey-pct.animate { transition: left 0.7s cubic-bezier(.2, .7, .3, 1); }
+/* A label that's also a control: accent colour AND underline, so it doesn't rely on colour
+   alone. The padding enlarges the tap target; the negative margin keeps it on the line. */
+.journey-start {
+  left: 0; margin: -8px -6px; padding: 8px 6px; border: none; border-radius: 6px; background: none;
+  color: var(--brass); font: inherit; line-height: 18px; text-decoration: underline;
+  text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer;
+}
+.journey-start:hover { text-decoration-thickness: 2px; }
+.journey-start:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+
+/* Debts title row: the "+" (add a debt) sits right beside the title once the primary button
+   has become "Log a payment". */
+.view-head.view-head-start { justify-content: flex-start; gap: 10px; }
+.icon-btn.title-add { width: 32px; height: 32px; border-radius: 50%; }
+.icon-btn.title-add svg { width: 14px; height: 14px; stroke-width: 2; stroke-linecap: round; }
+.icon-btn.title-add[hidden] { display: none; }
+
+/* Sheet component (every add/edit form): a modal <dialog class="sheet">.
+   Phones: pinned to the bottom edge, full width, slides up (and sits above the on-screen
+   keyboard via --kb). Wider screens: the same element as a centred 560px dialog that fades
+   in, because a panel rising from the bottom of a large screen reads as a phone pattern. */
+dialog.sheet {
+  position: fixed; inset: auto 0 var(--kb, 0px) 0; width: 100%; max-width: 560px;
+  max-height: calc(100dvh - var(--kb, 0px) - 24px);
+  margin: 0 auto; padding: 0; border: none; border-radius: 16px 16px 0 0;
+  background: var(--raised); color: var(--text); overflow: auto; overscroll-behavior: contain;
+  box-shadow: 0 -12px 40px -12px rgb(15 23 42 / 0.35);
+}
+dialog.sheet[open] { animation: sheet-up 0.24s cubic-bezier(.2, .8, .3, 1); }
+dialog.sheet.closing { animation: sheet-down 0.18s ease-in forwards; }
+dialog.sheet::backdrop { background: rgb(15 23 42 / 0.45); animation: sheet-fade 0.24s; }
+@keyframes sheet-up { from { transform: translateY(100%); } }
+@keyframes sheet-down { to { transform: translateY(100%); } }
+@keyframes sheet-fade { from { opacity: 0; } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes dialog-out { to { opacity: 0; transform: translateY(8px) scale(0.98); } }
+.sheet-grip { justify-self: center; width: 36px; height: 4px; border-radius: 2px; background: var(--line); }
+.sheet-head { position: relative; display: flex; align-items: center; min-height: 32px; padding-right: 36px; }
+.sheet-head .goal-close { top: 50%; right: -8px; width: 40px; height: 40px; font-size: 22px; transform: translateY(-50%); }
+.sheet-form .select-wrap { display: flex; }
+.sheet-form .select-wrap select { width: 100%; }
+.sheet-form .form-error:empty { display: none; }
+/* Action pairs keep equal heights; a lone submit (the payment sheet) matches them. */
+.sheet-form .form-actions button, .sheet-form > .btn-primary { height: 44px; }
+@media (min-width: 721px) {
+  dialog.sheet {
+    inset: 0; margin: auto; width: calc(100% - 48px); height: fit-content;
+    max-height: calc(100dvh - 48px); border-radius: 12px;
+    box-shadow: 0 24px 60px -20px rgb(15 23 42 / 0.45);
+  }
+  dialog.sheet[open] { animation: dialog-in 0.18s ease-out; }
+  dialog.sheet.closing { animation: dialog-out 0.14s ease-in forwards; }
+  .sheet-form { padding: 20px 24px 24px; }
+  .sheet-form .sheet-grip { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog.sheet[open], dialog.sheet::backdrop { animation: none; }
+}
+
+/* Payment celebration: a toast that fades out on its own (~1.5 s) plus confetti. Neither
+   blocks the page (pointer-events: none) or needs dismissing. */
+.celebrate {
+  position: fixed; left: 50%; bottom: 32px; z-index: 50; display: flex; align-items: center; gap: 10px;
+  max-width: min(420px, calc(100vw - 32px)); padding: 10px 16px 10px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--text);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 16px 36px -12px rgb(15 23 42 / 0.35);
+  opacity: 0; transform: translate(-50%, 8px); pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.celebrate.show { opacity: 1; transform: translate(-50%, 0); }
+.celebrate > svg { flex: none; width: 24px; height: 24px; }
+.celebrate > svg circle { fill: var(--green); }
+.celebrate > svg path { fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.celebrate b { display: block; font-size: 14px; font-weight: 700; }
+.celebrate b + span { display: block; font-size: 13px; color: var(--text-dim); }
+.confetti { position: fixed; inset: 0; z-index: 49; pointer-events: none; overflow: hidden; }
+.confetti span { position: absolute; width: 7px; height: 11px; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .journey-path, .journey-pct.animate, .celebrate { transition: none; }
+}
+/* One primary action; "More info" and the Edit icon are deliberately secondary, not a pair. */
+/* One right-aligned cluster, each action its own content width. The icon column is reserved
+   even on debts you can't edit, so every card's buttons line up. */
+/* Desktop: the state-driven primary shows only as "+ Add debt" (no debts to pay yet). In its
+   "Log a payment" state it's the mobile action bar only; on desktop each card's own button
+   does it, and adding moves to the title "+". */
+@media (min-width: 721px) {
+  #debtPrimary[data-action="pay"] { display: none; }
+}
+
+/* Two columns, mirroring the row above: the primary action (or "Paid off") on the left under
+   the name, the secondary pair on the right under "$X paid off", flush with its right edge. */
+.debt-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.debt-secondary { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* Without an Edit icon, "More info" is last: pull its text flush with the figure above. */
+.debt-secondary > .debt-more:last-child { margin-right: -8px; }
+.btn-primary.btn-sm.debt-pay { width: auto; height: 36px; padding: 0 16px; }
+.debt-paid { font-size: 13px; font-weight: 700; color: var(--text); }
+.debt-more {
+  display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 8px;
+  border: none; border-radius: 6px; background: none; color: var(--text-dim); cursor: pointer;
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.debt-more svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+.debt-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.debt-more:hover { color: var(--text); background: var(--paper-2); }
+.icon-btn {
+  display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--text-dim); cursor: pointer;
+}
+.icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.icon-btn:hover { border-color: var(--brass); color: var(--text); }
+.debt-more:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.debt-info { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.debt-info[hidden] { display: none; }
+.debt-estimate { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-dim); }
+/* Interest note: information, not an alarm, so a neutral rule (red is for "needs attention"). */
+.debt-note { margin: 0; padding-left: 10px; border-left: 3px solid var(--line); font-size: 13px; line-height: 1.45; color: var(--text); }
+.pay-form {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+  padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-2);
+}
+.pay-form .pay-help, .pay-form .pay-error, .pay-form .form-actions { grid-column: 1 / -1; }
+.pay-form .pay-help { margin: 0; }
+.pay-form .pay-error:empty { display: none; }
+
 /* ---- mobile (≤ 720px) ---- */
 @media (max-width: 720px) {
-  .wrap { padding: 16px 16px calc(104px + env(safe-area-inset-bottom, 0px)); }
+  /* room for the add bar (44) + tab bar + breathing space */
+  .wrap { padding: 16px 16px calc(var(--actionbar-h) + var(--tabbar-h) + 32px + env(safe-area-inset-bottom, 0px)); }
 
   /* C: sticky compact header */
   header.top {
@@ -510,7 +947,7 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
     background: var(--paper);
     padding-top: max(12px, env(safe-area-inset-top, 0px));
     padding-bottom: 12px;
-    margin-bottom: 8px;
+    margin-bottom: 20px;
     gap: 10px;
   }
   header.top h1 { font-size: 22px; }
@@ -520,9 +957,15 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
   /* 16px stops iOS Safari from zooming the page when a select is focused */
   .period-nav select { font-size: 16px; padding: 8px 30px 8px 12px; }
 
-  /* E: compact sync bar */
-  .sync-bar { margin: 4px 0 20px; }
-  #syncLabel { display: none; }
+  /* Account icon sits beside the household name; the dropdowns take the row below. Negative
+     block margins keep the 40px tap target without making the title row taller. */
+  .account { order: 2; align-self: center; margin-block: -8px; }
+  .period-nav { order: 3; }
+  .account-item { min-height: 44px; }
+  .account-item.account-signout { min-height: 40px; }
+  .name-form input { font-size: 16px; }
+  .member-row { grid-template-columns: 36px minmax(0, 1fr); grid-template-areas: "avatar name" "avatar email" "avatar since"; }
+  .members-invite .btn-primary { width: 100%; }
 
   .summary { gap: 12px; margin-bottom: 36px; }
   .summary-row { gap: 12px; }
@@ -539,28 +982,36 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
   .goal-input { grid-column: 1 / -1; }
   .goal-input input { font-size: 16px; }
 
-  /* B: fixed bottom add-bar */
+  /* The action bar: every view's primary action (+ Add transaction, + Add recurring rule,
+     + Add debt / Log a payment) as one fixed bar directly above the tab bar. Only the label
+     and the action differ by view; every box and type property is set here, once, so the
+     bar is pixel-identical everywhere. Never restyle .add-toggle per view on mobile. */
   .add-toggle {
     position: fixed;
-    bottom: 0;
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
     left: 0;
     right: 0;
     z-index: 20;
-    border-radius: 0;
+    box-sizing: border-box;
+    height: var(--actionbar-h);
     margin: 0;
+    padding: 0 16px;
+    border: none;
+    border-radius: 0;
     justify-content: center;
     background: var(--brass);
     color: #fff;
-    padding: 14px 16px;
-    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
     font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
   }
   .add-toggle:hover { background: #4338CA; }
-  section.ledger:has(.entry.open) > .add-toggle { display: none; }
 
   /* single-column fields; Cancel/Save stay a pair. 16px avoids iOS focus zoom. */
-  form.entry.open { grid-template-columns: 1fr; }
+  .sheet-form { grid-template-columns: minmax(0, 1fr); }
   .field input, .field select { font-size: 16px; }
+  .picker-option { min-height: 44px; font-size: 15px; }
+  .picker-list { max-height: 232px; }
 
   /* A: stacked transaction rows */
   table.tx thead { display: none; }
@@ -571,8 +1022,8 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
       "note note note amt"
       "date cat who del";
     grid-template-columns: auto auto 1fr auto;
-    gap: 6px 4px;
-    padding: 16px 0;
+    gap: 3px 4px;
+    padding: 10px 0;
     border-bottom: 1px solid var(--line);
     align-items: baseline;
   }
@@ -597,7 +1048,54 @@ aside .toggle-set button.active { background: var(--ink); color: var(--paper); }
   table.tx tbody tr { position: relative; }
   table.tx td.tx-actions { position: static; }
 
-  section.ledger h2 { margin-bottom: 4px; }
-  form.entry.open { margin: 12px 0 24px; }
+  section.ledger h2 { margin-bottom: 4px; scroll-margin-top: 124px; } /* clear the sticky header */
   aside { margin-top: 48px; }
+}
+
+/* ---- mobile shell: the sidebar becomes a fixed 4-tab bar ---- */
+@media (max-width: 720px) {
+  .shell { display: block; }
+  .app-nav {
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0; z-index: 30; height: auto;
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0;
+    padding: 0 0 env(safe-area-inset-bottom, 0px);
+    border-right: none; border-top: 1px solid var(--line); background: var(--raised);
+  }
+  .nav-brand { display: none; }
+  .nav-item {
+    position: relative; flex-direction: column; justify-content: center; gap: 3px;
+    height: var(--tabbar-h); padding: 0; border-radius: 0; font-size: 11px; text-align: center;
+  }
+  .nav-item svg { width: 22px; height: 22px; }
+  .nav-item:hover { background: none; }
+  .nav-item.active { background: none; color: var(--text); }
+  .nav-item.active svg { color: var(--brass); }
+  .nav-item.active::before {
+    content: ""; position: absolute; top: 0; left: 50%; width: 28px; height: 3px;
+    border-radius: 0 0 3px 3px; background: var(--brass); transform: translateX(-50%);
+  }
+  .nav-item:focus-visible { outline-offset: -3px; }
+  .view-title { font-size: 20px; }
+  .filter-toggle { flex: 1 1 100%; }
+  .search-wrap { flex-basis: 100%; }
+  .search-wrap input { font-size: 16px; }
+  .pay-form { grid-template-columns: minmax(0, 1fr); }
+  .celebrate { bottom: calc(var(--tabbar-h) + var(--actionbar-h) + 12px + env(safe-area-inset-bottom, 0px)); width: calc(100vw - 32px); }
+  .journey { padding: 16px 16px 14px; }
+  .rule-row { gap: 2px 10px; padding: 9px 4px 9px 12px; }
+  .rule-name { font-size: 14px; }
+  .rule-amt { font-size: 14px; }
+  .rule-meta { font-size: 12px; }
+
+  /* Transactions: filter + search stay reachable under the sticky header. The add bar is the
+     shared fixed one, so on mobile the toolbar holds only the filter and search. */
+  .tx-toolbar { top: var(--header-h, 0px); gap: 0; margin: 0 -16px; padding: 8px 16px 10px; }
+  .tx-toolbar .tx-tools { flex-basis: 100%; }
+  /* Filter and search share one row: the three filter buttons stay equal width, search takes the rest. */
+  .tx-toolbar .tx-tools { flex-wrap: nowrap; gap: 8px; }
+  .tx-toolbar .filter-toggle { flex: 0 0 auto; width: 204px; }
+  .tx-toolbar .filter-toggle button { flex: 1 1 0; min-width: 0; height: 38px; padding: 0 4px; }
+  .tx-toolbar .search-wrap { flex: 1 1 0; min-width: 0; }
+  .tx-toolbar .search-wrap svg { left: 10px; }
+  .tx-toolbar .search-wrap input { height: 40px; padding-left: 32px; }
 }

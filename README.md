@@ -68,7 +68,7 @@ npm run dev
 
 Open the printed localhost URL, choose **Create account**, and enter your
 name, email and a password. Confirm your email, sign in, and name your
-household. Then use **Invite partner** in the app to get a link to send
+household. Then open the account icon (top right) and choose **Invite partner** to get a link to send
 them — it works once and expires after 7 days.
 
 ## Upgrading an existing project from magic-link sign-in
@@ -126,11 +126,25 @@ PWA manifest already wired up in `vite.config.js`.
 - `households` — one row per family/couple.
 - `household_members` — who belongs to which household. Rows are only ever
   created by `create_household()` or `redeem_invite()`, never directly.
-- `profiles` — each person's display name, filled in from the sign-up form.
+- `profiles` — each person's display name, filled in from the sign-up form and editable
+  from the account menu (each person can change only their own).
+- `household_roster()` — the Members page's list: name, email and join date for the members
+  of your own household only (emails live in `auth.users`, which the app can't read directly).
+- `category_usage()` — how often each category has been used, per type, over the household's
+  whole history; it drives the "Most used" chips in the add-transaction form. It runs as the
+  caller, so the transactions read policy limits it to your own household.
 - `invites` — pending/used invite links. Only a SHA-256 hash of each link's
   token is stored; the link itself is shown once, when it's created.
 - `transactions` — the actual entries: `type` (income/expense), `amount`,
-  `date`, `category`, `note`, `author_id`/`author_email`.
+  `date`, `category`, `note`, `author_id`/`author_email`. Entries created by a recurring
+  rule or a debt payment also carry `recurring_rule_id` / `debt_id` (set only by the
+  database functions below, never by the app directly).
+- `recurring_rules` — monthly income/expense rules. `materialize_recurring()` turns due
+  rules into transactions when someone opens the app (at most one per rule per date).
+  Recurring entries are only created when the app is opened. For fully automatic daily runs,
+  schedule `materialize_recurring` with Supabase's **pg_cron** (Database → Cron).
+- `debts` — credit cards, loans, mortgages. `log_debt_payment()` lowers the balance and
+  records the matching expense in one step; deleting that expense restores the balance.
 
 Row-level security means each person only ever sees their own household's
 data and their housemates' names, and can only delete transactions they

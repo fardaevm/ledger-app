@@ -135,13 +135,64 @@
 
   <!-- ================= APP VIEW ================= -->
   <section id="view-app" class="screen" style="display:none;">
+    <div class="shell">
+      <!-- One nav: a left sidebar on desktop, a fixed 4-tab bar on mobile. -->
+      <nav class="app-nav" aria-label="Main">
+        <div class="nav-brand" aria-hidden="true">Ledger</div>
+        <button type="button" class="nav-item active" aria-current="page" data-view="dashboard">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          <span>Dashboard</span>
+        </button>
+        <button type="button" class="nav-item" data-view="transactions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
+          <span>Transactions</span>
+        </button>
+        <button type="button" class="nav-item" data-view="recurring">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>
+          <span>Recurring</span>
+        </button>
+        <button type="button" class="nav-item" data-view="debts">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><path d="M6 15h4"/></svg>
+          <span>Debts</span>
+        </button>
+      </nav>
+
     <div class="wrap">
       <header class="top">
-        <div>
+        <div class="top-title">
           <h1 id="hhTitle">Ledger</h1>
           <div class="tagline">Shared family income &amp; expenses</div>
         </div>
-        <div class="period-nav">
+        <!-- Account menu: identity, members, invite, profile and sign-out live here, not in header links. -->
+        <div class="account" id="account">
+          <button type="button" class="account-btn" id="accountBtn" aria-expanded="false" aria-controls="accountMenu" aria-label="Account">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          </button>
+          <div class="account-menu" id="accountMenu" hidden>
+            <div class="account-id">
+              <p class="account-name" id="accountName"></p>
+              <p class="account-email" id="accountEmail"></p>
+            </div>
+            <hr>
+            <button type="button" class="account-item" id="menuMembers">Members</button>
+            <button type="button" class="account-item" id="menuInvite">Invite partner</button>
+            <hr>
+            <button type="button" class="account-item" id="menuEditName" aria-expanded="false" aria-controls="nameForm">Edit display name</button>
+            <form class="name-form" id="nameForm" hidden novalidate>
+              <label class="visually-hidden" for="nameInput">Display name</label>
+              <input type="text" id="nameInput" maxlength="60" autocomplete="nickname">
+              <div class="name-actions">
+                <button type="button" class="btn-secondary btn-sm" id="nameCancel">Cancel</button>
+                <button type="submit" class="btn-primary btn-sm" id="nameSave">Save</button>
+              </div>
+            </form>
+            <button type="button" class="account-item" id="menuPassword">Change password</button>
+            <p class="hint account-hint" id="accountHint" role="status" aria-live="polite"></p>
+            <hr>
+            <button type="button" class="account-item account-signout" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+        <div class="period-nav" id="periodNav">
           <span class="select-wrap">
             <select id="periodMode" aria-label="View by">
               <option value="monthly" selected>Monthly</option>
@@ -154,14 +205,8 @@
         </div>
       </header>
 
-      <div class="sync-bar">
-        <div class="sync-status"><span class="sync-dot" id="syncDot"></span><span id="syncLabel">Connecting…</span></div>
-        <div class="right-actions">
-          <button class="link-btn" id="inviteBtn" aria-expanded="false" aria-controls="invitePanel">Invite partner</button>
-          <button class="link-btn" id="signOutBtn">Sign out</button>
-        </div>
-      </div>
-
+      <!-- The invite panel is moved next to whichever "Invite partner" opened it. -->
+      <div class="invite-slot" id="inviteSlotTop">
       <div class="invite-panel" id="invitePanel" hidden>
         <p class="invite-title">Invite your partner</p>
         <p class="invite-help">Send them this link. It works once and expires in 7 days.</p>
@@ -173,10 +218,13 @@
         <p class="hint" id="inviteHint" role="status" aria-live="polite"></p>
         <button type="button" class="goal-close" id="inviteClose" aria-label="Close invite panel">×</button>
       </div>
+      </div>
 
       <div class="banner" id="noticeBanner" role="status" hidden></div>
       <div class="banner warn" id="permBanner" style="display:none;"></div>
 
+      <!-- ================= DASHBOARD ================= -->
+      <section class="app-view" id="viewDashboard" aria-label="Dashboard">
       <div class="summary">
         <section class="stat profit hero" aria-label="Profit">
           <div class="hero-inner">
@@ -250,43 +298,11 @@
       <div class="layout">
         <section class="ledger">
           <h2>Entries</h2>
-          <button class="add-toggle" id="addToggle">+ Add transaction</button>
-
-          <form class="entry" id="entryForm">
-            <div class="type-toggle">
-              <button type="button" class="active expense" id="typeExpense" data-type="expense">Expense</button>
-              <button type="button" class="income" id="typeIncome" data-type="income">Income</button>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label for="fAmount">Amount</label>
-                <input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00" required>
-              </div>
-              <div class="field">
-                <label for="fDate">Date</label>
-                <input type="date" id="fDate" required>
-              </div>
-            </div>
-            <div class="cat-recent" id="catRecent" hidden>
-              <span class="cat-recent-label" id="catRecentLabel">Recent categories</span>
-              <div class="cat-chips" id="catChips" role="group" aria-labelledby="catRecentLabel"></div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label for="fCategory">Category</label>
-                <span class="select-wrap"><select id="fCategory" required></select></span>
-              </div>
-              <div class="field">
-                <label for="fNote">Note</label>
-                <input type="text" id="fNote" placeholder="Optional">
-              </div>
-            </div>
-            <div class="form-actions">
-              <span class="form-error" id="formError"></span>
-              <button type="button" class="btn-secondary" id="cancelEntry">Cancel</button>
-              <button type="submit" class="btn-primary" id="saveEntryBtn">Save entry</button>
-            </div>
-          </form>
+          <div class="entry-slot">
+          <div class="entry-area" id="entryArea">
+          <button class="add-toggle" id="addToggle" aria-haspopup="dialog">+ Add transaction</button>
+          </div>
+          </div>
 
           <table class="tx" id="txTable">
             <thead>
@@ -301,6 +317,7 @@
             </thead>
             <tbody id="txBody"></tbody>
           </table>
+          <div class="tx-footer" id="txFooter" hidden></div>
           <div class="empty" id="emptyState" style="display:none;">No entries for this period yet. Add your first transaction above.</div>
         </section>
 
@@ -313,10 +330,271 @@
           <div class="breakdown" id="breakdown"></div>
         </aside>
       </div>
+      </section>
+
+      <!-- ================= TRANSACTIONS ================= -->
+      <section class="app-view" id="viewTransactions" aria-labelledby="txViewTitle" hidden>
+        <div class="view-head"><h2 class="view-title" id="txViewTitle">Transactions</h2></div>
+        <!-- Sticky while scrolling: add button, type filter and search stay in reach. -->
+        <div class="tx-toolbar" id="txToolbar">
+        <div class="entry-slot"></div>
+        <div class="tx-tools">
+          <div class="filter-toggle" id="txFilter" role="group" aria-label="Show">
+            <button type="button" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" data-filter="expense" aria-pressed="false">Expenses</button>
+            <button type="button" data-filter="income" aria-pressed="false">Income</button>
+          </div>
+          <div class="search-wrap">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input type="search" id="txSearch" placeholder="Search" aria-label="Search transactions by category or note" autocomplete="off">
+          </div>
+        </div>
+        </div>
+        <table class="tx" id="txTableAll">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Category</th>
+                <th>Note</th>
+                <th>Added by</th>
+                <th class="amt">Amount</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="txBodyAll"></tbody>
+        </table>
+        <div class="tx-footer" id="txFooterAll" hidden></div>
+        <div class="empty" id="emptyAll" style="display:none;"></div>
+      </section>
+
+      <!-- ================= RECURRING ================= -->
+      <section class="app-view" id="viewRecurring" aria-labelledby="ruleViewTitle" hidden>
+        <div class="view-head"><h2 class="view-title" id="ruleViewTitle">Recurring</h2></div>
+        <p class="view-lead">Each rule adds its entry automatically every month on its day, the next time anyone in the household opens the app on or after that day.</p>
+        <div class="entry-area">
+          <button class="add-toggle" id="ruleAddToggle" aria-haspopup="dialog">+ Add recurring rule</button>
+        </div>
+        <ul class="rule-list" id="ruleList"></ul>
+        <div class="empty" id="ruleEmpty" style="display:none;">No recurring rules yet. Add rent, salary or subscriptions so they log themselves.</div>
+      </section>
+
+      <!-- ================= DEBTS ================= -->
+      <section class="app-view" id="viewDebts" aria-labelledby="debtViewTitle" hidden>
+        <div class="view-head view-head-start">
+          <h2 class="view-title" id="debtViewTitle">Debts</h2>
+          <!-- Shown once there's a debt to pay; the primary button then becomes "Log a payment". -->
+          <button type="button" class="icon-btn title-add" id="debtTitleAdd" aria-label="Add a debt" title="Add a debt" hidden>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+          </button>
+        </div>
+        <!-- All debts combined as one journey to $0. Filled by renderJourney(). -->
+        <section class="journey" id="debtJourney" aria-label="Debt-free journey" hidden></section>
+        <div class="entry-area">
+          <!-- Label and action come from renderDebts(): "+ Add debt" with no debts to pay,
+               "Log a payment" (opens #paySheet) once there are. -->
+          <button class="add-toggle" id="debtPrimary">+ Add debt</button>
+        </div>
+        <div class="card-list" id="debtList"></div>
+        <div class="empty" id="debtEmpty" style="display:none;">No debts yet. Add a credit card, loan or mortgage to track paying it down.</div>
+      </section>
+
+      <!-- ================= MEMBERS (reached from the account menu, not the nav) ================= -->
+      <section class="app-view" id="viewMembers" aria-labelledby="membersViewTitle" hidden>
+        <button type="button" class="back-btn" id="membersBack">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>Back
+        </button>
+        <div class="view-head"><h2 class="view-title" id="membersViewTitle" tabindex="-1">Members</h2></div>
+        <ul class="member-list" id="memberList"></ul>
+        <p class="hint" id="membersHint" role="status"></p>
+        <div class="members-invite">
+          <button type="button" class="btn-primary" id="membersInvite" aria-expanded="false" aria-controls="invitePanel">Invite partner</button>
+        </div>
+        <div class="invite-slot" id="inviteSlotMembers"></div>
+      </section>
+
+      <!-- ===== Sheets: every add/edit form opens in one of these (DESIGN.md "Sheets").
+           One component: openSheet()/closeSheet() in main.js; a bottom sheet on phones,
+           a centred dialog on wider screens. ===== -->
+      <dialog class="sheet" id="txSheet" aria-labelledby="txSheetTitle">
+        <form class="sheet-form" id="entryForm">
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h2 class="form-title" id="txSheetTitle">Add a transaction</h2>
+            <button type="button" class="goal-close" data-sheet-close aria-label="Close">×</button>
+          </div>
+          <div class="type-toggle">
+            <button type="button" class="active expense" id="typeExpense" data-type="expense">Expense</button>
+            <button type="button" class="income" id="typeIncome" data-type="income">Income</button>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="fAmount">Amount</label>
+              <input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00" required>
+            </div>
+            <div class="field">
+              <label for="fDate">Date</label>
+              <input type="date" id="fDate" required>
+            </div>
+          </div>
+          <!-- Most-used categories for the selected type: one tap picks one. -->
+          <div class="cat-recent" id="catRecent" hidden>
+            <span class="cat-recent-label" id="catRecentLabel">Most used</span>
+            <div class="cat-chips" id="catChips" role="group" aria-labelledby="catRecentLabel"></div>
+          </div>
+          <!-- Everything else: a searchable picker (ARIA combobox + grouped listbox). The chosen
+               name is in the hidden #fCategory; the text input only shows it or the search. -->
+          <div class="field picker-field">
+            <label for="fCategoryInput" id="fCategoryLabel">Category</label>
+            <div class="picker">
+              <input type="text" id="fCategoryInput" class="picker-input" role="combobox"
+                aria-autocomplete="list" aria-expanded="false" aria-controls="fCategoryList"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                placeholder="Search or choose" required>
+              <svg class="picker-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+              <input type="hidden" id="fCategory">
+              <div class="picker-list" id="fCategoryList" role="listbox" aria-labelledby="fCategoryLabel" hidden></div>
+              <span class="visually-hidden" id="fCategoryStatus" role="status"></span>
+            </div>
+          </div>
+          <div class="field note-field">
+            <label for="fNote">Note</label>
+            <input type="text" id="fNote" placeholder="Optional">
+          </div>
+          <div class="form-actions">
+            <span class="form-error" id="formError"></span>
+            <button type="button" class="btn-secondary" id="cancelEntry" data-sheet-close>Cancel</button>
+            <button type="submit" class="btn-primary" id="saveEntryBtn">Save entry</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog class="sheet" id="ruleSheet" aria-labelledby="ruleSheetTitle">
+        <form class="sheet-form" id="ruleForm">
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h2 class="form-title" id="ruleSheetTitle">Add a recurring rule</h2>
+            <button type="button" class="goal-close" data-sheet-close aria-label="Close">×</button>
+          </div>
+          <div class="type-toggle" id="ruleType">
+            <button type="button" class="active expense" data-type="expense">Expense</button>
+            <button type="button" class="income" data-type="income">Income</button>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="rAmount">Amount</label>
+              <input type="number" id="rAmount" step="0.01" min="0.01" placeholder="0.00" required>
+            </div>
+            <div class="field">
+              <label for="rDay">Day of month</label>
+              <span class="select-wrap"><select id="rDay" required><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="28">28</option></select></span>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="rCategory">Category</label>
+              <span class="select-wrap"><select id="rCategory" required></select></span>
+            </div>
+            <div class="field">
+              <label for="rNote">Name</label>
+              <input type="text" id="rNote" placeholder="e.g. Rent, Netflix" maxlength="120">
+            </div>
+          </div>
+          <label class="check-row" id="rNowRow" hidden>
+            <input type="checkbox" id="rNow">
+            <span id="rNowText">Also add this month's entry now</span>
+          </label>
+          <p class="field-help rule-day-help">Days go up to 28 so every month has one.</p>
+          <div class="form-actions">
+            <span class="form-error" id="ruleError"></span>
+            <button type="button" class="btn-secondary" id="ruleCancel" data-sheet-close>Cancel</button>
+            <button type="submit" class="btn-primary" id="ruleSave">Save rule</button>
+          </div>
+
+        </form>
+      </dialog>
+
+      <dialog class="sheet" id="debtSheet" aria-labelledby="debtFormTitle">
+        <form class="sheet-form" id="debtForm">
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h2 class="form-title" id="debtFormTitle">Add a debt</h2>
+            <button type="button" class="goal-close" data-sheet-close aria-label="Close">×</button>
+          </div>
+                      <div class="field-row">
+            <div class="field">
+              <label for="dName">Name</label>
+              <input type="text" id="dName" placeholder="e.g. Chase Sapphire" maxlength="80" required>
+            </div>
+            <div class="field">
+              <label for="dType">Type</label>
+              <span class="select-wrap"><select id="dType" required>
+                <option value="credit_card">Credit card</option>
+                <option value="loan">Loan</option>
+                <option value="mortgage">Mortgage</option>
+                <option value="other">Other</option>
+              </select></span>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="dOriginal">Original balance</label>
+              <input type="number" id="dOriginal" step="0.01" min="0.01" placeholder="0.00" required>
+            </div>
+            <div class="field">
+              <label for="dCurrent">Current balance</label>
+              <input type="number" id="dCurrent" step="0.01" min="0" placeholder="0.00" required>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="dRate">Interest rate (APR %)</label>
+              <input type="number" id="dRate" step="0.01" min="0" max="100" placeholder="Optional">
+            </div>
+            <div class="field">
+              <label for="dMin">Minimum monthly payment</label>
+              <input type="number" id="dMin" step="0.01" min="0.01" placeholder="Optional">
+            </div>
+          </div>
+          <div class="form-actions">
+            <span class="form-error" id="debtError"></span>
+            <button type="button" class="btn-secondary" id="debtCancel" data-sheet-close>Cancel</button>
+            <button type="submit" class="btn-primary" id="debtSave">Save debt</button>
+          </div>
+
+        </form>
+      </dialog>
+
+      <!-- "Log a payment" bottom sheet (a modal <dialog> styled to slide up from the bottom). -->
+      <dialog class="sheet" id="paySheet" aria-labelledby="paySheetTitle">
+        <form class="sheet-form" id="paySheetForm">
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h2 class="form-title" id="paySheetTitle">Log a payment</h2>
+            <button type="button" class="goal-close" id="paySheetClose" data-sheet-close aria-label="Close">×</button>
+          </div>
+          <div class="field">
+            <label for="sheetDebt">Debt</label>
+            <span class="select-wrap"><select id="sheetDebt" required></select></span>
+          </div>
+          <div class="field">
+            <label for="sheetAmount">Amount</label>
+            <input type="number" id="sheetAmount" step="0.01" min="0.01" inputmode="decimal" placeholder="0.00" required>
+          </div>
+          <p class="form-error" id="sheetError" role="alert"></p>
+          <button type="submit" class="btn-primary" id="sheetSubmit">Log payment</button>
+        </form>
+      </dialog>
+
+      <!-- Brief celebration after logging a debt payment (never needs dismissing). -->
+      <div class="celebrate" id="celebrate" role="status" aria-live="polite"></div>
+
+      <!-- Holds the add-transaction form while a view without an entry slot is showing. -->
+      <div id="entryParking" hidden></div>
+    </div>
     </div>
   </section>
 
 </div>
-<script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -64,6 +64,9 @@ const state = {
   pendingInvite: inviteFromUrl,        // raw invite token, redeemed once signed in
   household: null,
   names: {},              // user id -> display name, from profiles
+  categoryUsage: null,    // [{ type, category, uses }] from category_usage(); null = not loaded
+  journeyShowTotal: false, // Debts: "Start" under the journey bar shows the total starting debt
+  members: [],            // Members page: [{ user_id, display_name, email, role, joined_at }]
   inviteLink: null,
   tx: [],
   periodMode: "monthly",           // "monthly" | "annual"
@@ -71,6 +74,19 @@ const state = {
   selectedYear: currentYear(),
   formType: "expense",
   breakdownType: "expense",
+  txExpanded: false,        // entries list: 5 most recent, or all (paged by 15)
+  txPage: 1,
+  view: "dashboard",        // dashboard | transactions | recurring | debts
+  txFilter: "all",          // Transactions view: all | expense | income
+  txQuery: "",
+  txAllPage: 1,
+  rules: [],
+  debts: [],
+  ruleType: "expense",
+  editingDebtId: null,      // debt being edited in the debt form (null = adding)
+  payingDebtId: null,       // debt whose "Log a payment" form is open
+  expandedDebts: new Set(), // debts showing "More info"
+  missing: { rules: false, debts: false }, // tables not created yet (migration not run)
   confirmingDeleteId: null, // row whose Delete is showing Cancel / Confirm delete
   deleteErrorId: null,
   realtimeChannel: null
@@ -90,10 +106,12 @@ function currentMonthKey() {
 function currentYear() {
   return new Date().getFullYear();
 }
+// Safe in text AND in quoted attributes: innerHTML escapes & < > but not quotes, and several
+// templates put this output inside attr="…" (aria-label, title, data-*).
 function escapeHtml(s) {
   const div = document.createElement("div");
   div.textContent = s;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 // ---------------------------------------------------------------------------
@@ -380,9 +398,14 @@ const INVITE_CREATE_ERRORS = {
   not_a_member: "You're not a member of this household anymore. Reload the app."
 };
 
-async function openInvitePanel() {
+// Opened from the account menu (panel shows under the header) or from the Members page (under
+// its button). One panel, moved into the slot next to whatever opened it; focus returns there.
+async function openInvitePanel(slotId, opener) {
+  state.inviteOpener = opener;
+  $(slotId).append($("invitePanel"));
+  $("membersInvite").setAttribute("aria-expanded", String(slotId === "inviteSlotMembers"));
   $("invitePanel").hidden = false;
-  $("inviteBtn").setAttribute("aria-expanded", "true");
+  $("invitePanel").scrollIntoView({ block: "nearest" });
   $("inviteShare").hidden = !navigator.share;
   $("inviteActions").classList.toggle("single", !navigator.share);
   if (state.inviteLink) return;
@@ -407,11 +430,13 @@ async function openInvitePanel() {
 
 function closeInvitePanel() {
   $("invitePanel").hidden = true;
-  $("inviteBtn").setAttribute("aria-expanded", "false");
-  $("inviteBtn").focus();
+  $("membersInvite").setAttribute("aria-expanded", "false");
+  // The menu's item is hidden once the menu closes, so focus the account button instead.
+  const opener = state.inviteOpener && state.inviteOpener.checkVisibility() ? state.inviteOpener : $("accountBtn");
+  state.inviteOpener = null;
+  opener.focus();
 }
 
-$("inviteBtn").addEventListener("click", () => ($("invitePanel").hidden ? openInvitePanel() : closeInvitePanel()));
 $("inviteClose").addEventListener("click", closeInvitePanel);
 $("inviteLink").addEventListener("focus", (e) => e.target.select());
 $("inviteCopy").addEventListener("click", async () => {
@@ -429,40 +454,381 @@ $("inviteShare").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// account menu (header icon): identity, Members, invite, display name, password, sign out
+// ---------------------------------------------------------------------------
+const myId = () => state.session?.user?.id;
+const myEmail = () => state.session?.user?.email || "";
+const myName = () => state.names[myId()] || myEmail().split("@")[0];
+
+function openAccountMenu() {
+  $("accountName").textContent = myName();
+  $("accountEmail").textContent = myEmail();
+  closeNameForm(false);
+  setHint("accountHint", "");
+  $("accountMenu").hidden = false;
+  $("accountBtn").setAttribute("aria-expanded", "true");
+  $("menuMembers").focus();
+}
+function closeAccountMenu(returnFocus = true) {
+  if ($("accountMenu").hidden) return;
+  $("accountMenu").hidden = true;
+  $("accountBtn").setAttribute("aria-expanded", "false");
+  if (returnFocus) $("accountBtn").focus();
+}
+$("accountBtn").addEventListener("click", () => ($("accountMenu").hidden ? openAccountMenu() : closeAccountMenu()));
+$("account").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // Escape in the name field backs out of the edit; anywhere else it closes the menu.
+  if (!$("nameForm").hidden && $("nameForm").contains(e.target)) closeNameForm();
+  else closeAccountMenu();
+});
+// A click or focus anywhere outside closes it (a disclosure, not a modal: nothing is trapped).
+document.addEventListener("pointerdown", (e) => { if (!$("account").contains(e.target)) closeAccountMenu(false); });
+document.addEventListener("focusin", (e) => { if (!$("account").contains(e.target)) closeAccountMenu(false); });
+
+$("menuMembers").addEventListener("click", () => {
+  closeAccountMenu(false);
+  openMembers();
+});
+$("menuInvite").addEventListener("click", () => {
+  closeAccountMenu(false);
+  openInvitePanel("inviteSlotTop", $("accountBtn"));
+  $("inviteCopy").focus();
+});
+
+function openNameForm() {
+  setHint("accountHint", "");
+  $("nameForm").hidden = false;
+  $("menuEditName").setAttribute("aria-expanded", "true");
+  $("nameInput").value = myName();
+  $("nameInput").focus();
+  $("nameInput").select();
+}
+function closeNameForm(returnFocus = true) {
+  $("nameForm").hidden = true;
+  $("menuEditName").setAttribute("aria-expanded", "false");
+  if (returnFocus) $("menuEditName").focus();
+}
+$("menuEditName").addEventListener("click", () => ($("nameForm").hidden ? openNameForm() : closeNameForm()));
+$("nameCancel").addEventListener("click", () => closeNameForm());
+$("nameForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = $("nameInput").value.trim();
+  if (!name) {
+    setHint("accountHint", "Enter a name.", true);
+    return $("nameInput").focus();
+  }
+  if (name === myName()) return closeNameForm();
+  setBusy("nameSave", true);
+  // .select("id"): an update RLS filters out returns no rows rather than an error.
+  const { data, error } = await supabase.from("profiles").update({ display_name: name }).eq("id", myId()).select("id");
+  setBusy("nameSave", false);
+  if (error || !data?.length) {
+    if (error) console.error("[Ledger] saving the display name failed:", error);
+    setHint("accountHint", error && !error.code ? "Couldn't reach the server. Check your connection and try again." : "Couldn't save your name. Try again.", true);
+    return $("nameInput").focus();
+  }
+  state.names[myId()] = name;
+  $("accountName").textContent = name;
+  closeNameForm();
+  setHint("accountHint", "Name saved.");
+  // Names show in "Added by" everywhere.
+  render();
+  if (state.view === "recurring") renderRules();
+  if (state.view === "debts") renderDebts();
+  if (state.view === "members") renderMembers();
+});
+
+let sendingReset = false;
+$("menuPassword").addEventListener("click", async () => {
+  if (sendingReset) return;
+  sendingReset = true;
+  setHint("accountHint", "Sending…");
+  const { error } = await supabase.auth.resetPasswordForEmail(myEmail(), { redirectTo: returnUrl() });
+  sendingReset = false;
+  if (error) return setHint("accountHint", authErrorMessage(error, "Couldn't send the email. Try again in a minute."), true);
+  setHint("accountHint", `We've emailed ${myEmail()} a link to set a new password.`);
+});
+
+// ---------------------------------------------------------------------------
+// Members page (from the account menu only). It pushes a history entry, so the browser's or
+// phone's Back button leaves it too; the URL itself doesn't change.
+// ---------------------------------------------------------------------------
+function openMembers() {
+  if (state.view !== "members") {
+    state.membersReturn = state.view;
+    showAppView("members");
+    history.pushState({ ledgerView: "members" }, "");
+  }
+  $("membersViewTitle").focus();
+  loadMembers();
+}
+// Leaving by our Back button or a nav tab pops that history entry, so the two Backs agree.
+function leaveMembers(to) {
+  if (history.state?.ledgerView === "members") {
+    state.afterPop = to;
+    history.back();
+  } else {
+    showAppView(to);
+  }
+}
+window.addEventListener("popstate", () => {
+  if (state.view === "members") showAppView(state.afterPop || state.membersReturn || "dashboard");
+  state.afterPop = null;
+});
+$("membersBack").addEventListener("click", () => leaveMembers(state.membersReturn || "dashboard"));
+$("membersInvite").addEventListener("click", () => {
+  const openHere = $("invitePanel").hidden || !$("inviteSlotMembers").contains($("invitePanel"));
+  if (openHere) openInvitePanel("inviteSlotMembers", $("membersInvite"));
+  else closeInvitePanel();
+});
+
+async function loadMembers() {
+  setHint("membersHint", "");
+  const { data, error } = await supabase.rpc("household_roster", { hid: state.household.id });
+  if (!error) {
+    state.members = data;
+  } else {
+    // Until the migration adds household_roster: names and join dates, and only your own email
+    // (other people's emails live in auth.users, which the app can't read directly).
+    if (error.code !== "PGRST202") console.error("[Ledger] household_roster failed:", error);
+    const res = await supabase.from("household_members").select("user_id, joined_at").eq("household_id", state.household.id).order("joined_at");
+    if (res.error) {
+      state.members = [];
+      setHint("membersHint", "Couldn't load the members. Check your connection and try again.", true);
+    } else {
+      state.members = res.data.map((m) => ({ ...m, display_name: state.names[m.user_id] || null, email: m.user_id === myId() ? myEmail() : null }));
+      if (error.code === "PGRST202") setHint("membersHint", "Other members' emails show once the latest migration from supabase/schema.sql has been run.");
+    }
+  }
+  renderMembers();
+}
+
+function memberSince(joinedAt) {
+  const days = Math.floor((Date.now() - new Date(joinedAt)) / 86400000);
+  const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (days < 1) return "Joined today";
+  if (days < 31) return `Member for ${plural(days, "day")}`;
+  const months = Math.floor(days / 30.44);
+  if (months < 12) return `Member for ${plural(months, "month")}`;
+  return `Member for ${plural(Math.floor(months / 12), "year")}`;
+}
+
+function renderMembers() {
+  $("memberList").innerHTML = (state.members || [])
+    .map((m) => {
+      const me = m.user_id === myId();
+      const name = (me ? myName() : m.display_name) || (m.email ? m.email.split("@")[0] : "Member");
+      return `<li class="member-row">
+        <span class="member-avatar" aria-hidden="true">${escapeHtml(name.charAt(0).toUpperCase())}</span>
+        <p class="member-name">${escapeHtml(name)}${me ? ` <span class="you-tag">You</span>` : ""}</p>
+        <p class="member-email">${m.email ? escapeHtml(m.email) : "Email not available"}</p>
+        <p class="member-since" title="Joined ${escapeHtml(new Date(m.joined_at).toLocaleDateString())}">${memberSince(m.joined_at)}</p>
+      </li>`;
+    })
+    .join("");
+}
+
+// ---------------------------------------------------------------------------
 // ledger (main app view)
 // ---------------------------------------------------------------------------
-function populateCategorySelect() {
-  const sel = $("fCategory");
-  // No preselected category: a deliberate choice (or a recent chip) beats a wrong default.
+// Grouped category <select> for a type. No preselected category: a deliberate choice
+// (or a recent chip) beats a wrong default.
+function fillCategorySelect(sel, type) {
   const placeholder = new Option("Choose a category", "", true, true);
   placeholder.disabled = true;
   sel.replaceChildren(placeholder);
-  for (const [group, names] of CATEGORIES[state.formType]) {
+  for (const [group, names] of CATEGORIES[type]) {
     const optgroup = document.createElement("optgroup");
     optgroup.label = group;
     names.forEach((name) => optgroup.append(new Option(name, name)));
     sel.append(optgroup);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Category picker: an ARIA 1.2 combobox, a text input that controls a grouped listbox.
+// With no search text the list is the full grouped set; typing filters by category name,
+// case-insensitive, across every group. The chosen name lives in a hidden input; the text
+// input shows it, or the search while you type. Reusable: pass the elements and the groups.
+// ---------------------------------------------------------------------------
+function categoryPicker({ input, list, hidden, status, getGroups, onChange }) {
+  let options = [];
+  let active = -1;
+  const isOpen = () => input.getAttribute("aria-expanded") === "true";
+
+  function render(query) {
+    const q = query.trim().toLowerCase();
+    list.replaceChildren();
+    options = [];
+    getGroups().forEach(([group, names], gi) => {
+      const matches = q ? names.filter((name) => name.toLowerCase().includes(q)) : names;
+      if (!matches.length) return;
+      const groupEl = document.createElement("div");
+      groupEl.setAttribute("role", "group");
+      const label = document.createElement("div");
+      label.className = "picker-group";
+      label.id = `${list.id}-g${gi}`;
+      label.textContent = group;
+      groupEl.setAttribute("aria-labelledby", label.id);
+      groupEl.append(label);
+      for (const name of matches) {
+        const opt = document.createElement("div");
+        opt.className = "picker-option";
+        opt.id = `${list.id}-o${options.length}`;
+        opt.setAttribute("role", "option");
+        opt.setAttribute("aria-selected", String(name === hidden.value));
+        opt.dataset.value = name;
+        opt.textContent = name;
+        groupEl.append(opt);
+        options.push(opt);
+      }
+      list.append(groupEl);
+    });
+    if (!options.length) {
+      const empty = document.createElement("div");
+      empty.className = "picker-empty";
+      empty.textContent = `No category matches "${query.trim()}"`;
+      list.append(empty);
+    }
+    if (status) status.textContent = q ? `${options.length} match${options.length === 1 ? "" : "es"}` : "";
+  }
+
+  function setActive(i) {
+    options[active]?.classList.remove("active");
+    active = i;
+    const opt = options[active];
+    if (opt) {
+      opt.classList.add("active");
+      input.setAttribute("aria-activedescendant", opt.id);
+      // Scroll only the list (scrollIntoView would also scroll the sheet and the page). A
+      // group's first option brings its header along.
+      const header = opt.previousElementSibling?.classList.contains("picker-group") ? opt.previousElementSibling : opt;
+      const box = list.getBoundingClientRect();
+      const top = header.getBoundingClientRect().top;
+      const bottom = opt.getBoundingClientRect().bottom;
+      if (top < box.top) list.scrollTop -= box.top - top + 4;
+      else if (bottom > box.bottom) list.scrollTop += bottom - box.bottom + 4;
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  function open(query = "") {
+    render(query);
+    list.scrollTop = 0; // a new result set starts at its top (and its first group header)
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    // Searching: the first match is ready for Enter. Browsing: start on the current choice.
+    setActive(query.trim() ? (options.length ? 0 : -1) : options.findIndex((o) => o.dataset.value === hidden.value));
+    input.closest(".picker").scrollIntoView({ block: "nearest" });
+  }
+
+  function close() {
+    setActive(-1);
+    list.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.value = hidden.value; // an unfinished search never lingers as if it were the value
+  }
+
+  function set(name) {
+    hidden.value = name || "";
+    input.setCustomValidity("");
+    close();
+    onChange?.(hidden.value);
+  }
+
+  input.addEventListener("focus", () => {
+    input.select(); // typing replaces the shown name, i.e. starts a search
+    if (!isOpen()) open();
+  });
+  input.addEventListener("click", () => {
+    if (!isOpen()) open();
+  });
+  input.addEventListener("input", () => open(input.value));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!isOpen()) return open();
+      const next = active + (e.key === "ArrowDown" ? 1 : -1);
+      setActive(Math.max(0, Math.min(options.length - 1, next)));
+    } else if (e.key === "Enter" && isOpen()) {
+      e.preventDefault(); // pick, don't submit the form
+      const pick = options[active] || (options.length === 1 ? options[0] : null);
+      if (pick) set(pick.dataset.value);
+    } else if (e.key === "Escape" && isOpen()) {
+      e.preventDefault();
+      e.stopPropagation(); // closes the list only, not the sheet around it
+      close();
+    } else if (e.key === "Tab" && isOpen()) {
+      close();
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (isOpen()) close();
+  });
+  // Keep focus in the input while choosing, so blur doesn't close the list mid-click.
+  list.addEventListener("pointerdown", (e) => e.preventDefault());
+  list.addEventListener("click", (e) => {
+    const opt = e.target.closest('[role="option"]');
+    if (opt) set(opt.dataset.value);
+  });
+
+  return {
+    set,
+    clear: () => set(""),
+    value: () => hidden.value,
+    // Before submit: a search left in the box isn't a choice.
+    validate() {
+      input.setCustomValidity(hidden.value ? "" : "Choose a category from the list.");
+      return Boolean(hidden.value);
+    }
+  };
+}
+
+const txCategory = categoryPicker({
+  input: $("fCategoryInput"),
+  list: $("fCategoryList"),
+  hidden: $("fCategory"),
+  status: $("fCategoryStatus"),
+  getGroups: () => CATEGORIES[state.formType],
+  onChange: () => syncCategoryChips()
+});
+
+function populateCategorySelect() {
+  txCategory.clear();
   renderCategoryChips();
 }
 
-// The household's most recently used categories for this type, newest first.
-function recentCategories(type, limit = 5) {
+// The household's most-used categories for this type, by number of entries over its whole
+// history (category_usage()), ties alphabetical. Until that function exists, counts come
+// from the loaded entries. Old category names never appear.
+function topCategories(type, limit = 5) {
   const valid = new Set(CATEGORIES[type].flatMap(([, names]) => names));
-  const recent = [];
-  const newestFirst = [...state.tx].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  for (const t of newestFirst) {
-    if (t.type === type && valid.has(t.category) && !recent.includes(t.category)) recent.push(t.category);
-    if (recent.length === limit) break;
+  const rows = state.categoryUsage ?? state.tx.map((t) => ({ type: t.type, category: t.category, uses: 1 }));
+  const counts = new Map();
+  for (const r of rows) {
+    if (r.type === type && valid.has(r.category)) counts.set(r.category, (counts.get(r.category) || 0) + Number(r.uses));
   }
-  return recent;
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit).map(([name]) => name);
+}
+
+// Refreshed at start-up, on returning to the app and after each save, never while the form
+// is open, so chips can't reorder under a finger.
+async function loadCategoryUsage() {
+  const { data, error } = await supabase.rpc("category_usage", { hid: state.household.id });
+  if (error) {
+    if (error.code !== "PGRST202") console.warn("[Ledger] category_usage failed:", error.code, error.message);
+    return;
+  }
+  state.categoryUsage = data;
 }
 
 function renderCategoryChips() {
-  const recent = recentCategories(state.formType);
-  $("catRecent").hidden = recent.length === 0;
+  const top = topCategories(state.formType);
+  $("catRecent").hidden = top.length === 0;
   $("catChips").replaceChildren(
-    ...recent.map((name) => {
+    ...top.map((name) => {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "cat-chip";
@@ -479,13 +845,11 @@ function syncCategoryChips() {
   $("catChips").querySelectorAll(".cat-chip").forEach((chip) => chip.setAttribute("aria-pressed", String(chip.dataset.cat === value)));
 }
 
+// A chip sets the picker's value (which re-syncs the chips), so the two never disagree.
 $("catChips").addEventListener("click", (e) => {
   const chip = e.target.closest(".cat-chip");
-  if (!chip) return;
-  $("fCategory").value = chip.dataset.cat;
-  syncCategoryChips();
+  if (chip) txCategory.set(chip.dataset.cat);
 });
-$("fCategory").addEventListener("change", syncCategoryChips);
 
 // t.date is "YYYY-MM-DD", so prefix matching filters by period without timezone math.
 function filteredTx() {
@@ -546,13 +910,6 @@ function renderPeriodControls() {
   $("periodMode").value = state.periodMode;
 }
 
-function setSyncStatus(mode) {
-  const dot = $("syncDot");
-  const label = $("syncLabel");
-  dot.className = "sync-dot" + (mode === "live" ? " live" : mode === "off" ? " off" : "");
-  label.textContent = mode === "live" ? "Synced" : mode === "off" ? "Not connected" : "Connecting…";
-}
-
 function render() {
   renderPeriodControls();
 
@@ -574,30 +931,84 @@ function render() {
   const empty = $("emptyState");
   const myId = state.session?.user?.id;
 
+  // Only the list is shortened; totals, rings and charts above use every entry.
+  const pages = Math.max(1, Math.ceil(sorted.length / TX_PAGE_SIZE));
+  state.txPage = Math.min(state.txPage, pages);
+  const start = state.txExpanded ? (state.txPage - 1) * TX_PAGE_SIZE : 0;
+  const visible = sorted.slice(start, start + (state.txExpanded ? TX_PAGE_SIZE : TX_PREVIEW));
+  renderTxFooter(sorted.length, start, visible.length, pages);
+
   if (sorted.length === 0) {
     body.innerHTML = "";
     empty.style.display = "block";
   } else {
     empty.style.display = "none";
-    body.innerHTML = sorted.map((t) => {
-      const d = new Date(t.date + "T00:00:00");
-      const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-      const who = state.names[t.author_id] || (t.author_email ? t.author_email.split("@")[0] : "—");
-      const canDelete = myId && t.author_id === myId;
-      return `
-        <tr>
-          <td class="tx-date">${dateStr}</td>
-          <td class="tx-cat">${escapeHtml(t.category)}</td>
-          <td class="tx-note">${t.note ? escapeHtml(t.note) : '<span style="color:var(--text-dim)">—</span>'}</td>
-          <td class="tx-who">${escapeHtml(who)}</td>
-          <td class="tx-amt ${t.type}">${t.type === "expense" ? "-" : "+"}${fmtMoney(Math.abs(Number(t.amount)))}</td>
-          <td class="tx-actions"${canDelete ? ` data-actions-for="${escapeHtml(String(t.id))}"` : ""}>${canDelete ? actionsHtml(t, dateStr) : ""}</td>
-        </tr>`;
-    }).join("");
+    body.innerHTML = visible.map((t) => txRowHtml(t, myId)).join("");
   }
 
   renderBreakdown(list);
   renderTrend();
+  renderTransactionsView(sorted);
+}
+
+// One table row, shared by the Dashboard list and the Transactions view. Delete appears only
+// on the signed-in user's own entries (the database enforces the same rule).
+function txRowHtml(t, myId) {
+  const dateStr = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const who = state.names[t.author_id] || (t.author_email ? t.author_email.split("@")[0] : "—");
+  const canDelete = myId && t.author_id === myId;
+  const auto = t.recurring_rule_id ? ' <span class="tx-badge" title="Added automatically by a recurring rule">Recurring</span>' : "";
+  return `
+    <tr>
+      <td class="tx-date">${dateStr}</td>
+      <td class="tx-cat" title="${escapeHtml(t.category)}">${escapeHtml(t.category)}</td>
+      <td class="tx-note"${t.note ? ` title="${escapeHtml(t.note)}"` : ""}>${t.note ? escapeHtml(t.note) : '<span style="color:var(--text-dim)">—</span>'}${auto}</td>
+      <td class="tx-who">${escapeHtml(who)}</td>
+      <td class="tx-amt ${t.type}">${t.type === "expense" ? "-" : "+"}${fmtMoney(Math.abs(Number(t.amount)))}</td>
+      <td class="tx-actions"${canDelete ? ` data-actions-for="${escapeHtml(String(t.id))}"` : ""}>${canDelete ? actionsHtml(t, dateStr) : ""}</td>
+    </tr>`;
+}
+
+// Transactions view: the full list for the period, filtered by type and a text search,
+// 15 per page. Works on the already-loaded transactions; no extra query.
+function renderTransactionsView(sorted) {
+  const q = state.txQuery.trim().toLowerCase();
+  const matches = sorted.filter(
+    (t) =>
+      (state.txFilter === "all" || t.type === state.txFilter) &&
+      (!q || t.category.toLowerCase().includes(q) || (t.note || "").toLowerCase().includes(q))
+  );
+  const pages = Math.max(1, Math.ceil(matches.length / TX_PAGE_SIZE));
+  state.txAllPage = Math.min(state.txAllPage, pages);
+  const start = (state.txAllPage - 1) * TX_PAGE_SIZE;
+  const shown = matches.slice(start, start + TX_PAGE_SIZE);
+  const myId = state.session?.user?.id;
+
+  $("txBodyAll").innerHTML = shown.map((t) => txRowHtml(t, myId)).join("");
+  $("txTableAll").hidden = matches.length === 0;
+  const empty = $("emptyAll");
+  empty.style.display = matches.length ? "none" : "block";
+  empty.textContent = sorted.length === 0
+    ? "No entries for this period yet."
+    : q
+      ? `No entries match “${state.txQuery.trim()}”${state.txFilter === "all" ? "" : ` in ${state.txFilter === "expense" ? "expenses" : "income"}`}.`
+      : `No ${state.txFilter === "expense" ? "expenses" : "income"} this period.`;
+
+  const footer = $("txFooterAll");
+  footer.hidden = matches.length === 0;
+  if (footer.hidden) return;
+  const filtered = matches.length !== sorted.length ? ` (filtered from ${sorted.length})` : "";
+  const range = shown.length === matches.length ? `Showing all ${matches.length}` : `Showing ${start + 1}–${start + shown.length} of ${matches.length}`;
+  let pager = "";
+  if (pages > 1) {
+    const cur = state.txAllPage;
+    pager = `<nav class="tx-pager" aria-label="Transaction pages">
+      <button type="button" class="pager-btn" data-page="${cur - 1}" aria-label="Previous page" ${cur === 1 ? "disabled" : ""}>‹</button>
+      ${pageList(cur, pages).map((p) => (p === "…" ? `<span class="pager-gap" aria-hidden="true">…</span>` : `<button type="button" class="pager-btn" data-page="${p}" aria-label="Page ${p}"${p === cur ? ' aria-current="page"' : ""}>${p}</button>`)).join("")}
+      <button type="button" class="pager-btn" data-page="${cur + 1}" aria-label="Next page" ${cur === pages ? "disabled" : ""}>›</button>
+    </nav>`;
+  }
+  footer.innerHTML = `<p class="tx-range" aria-live="polite">${range}${filtered}</p>${pager}`;
 }
 
 // Share of the selected period that has elapsed: past periods are complete, future ones not started.
@@ -856,32 +1267,180 @@ function renderBreakdown(list) {
   }).join("");
 }
 
+// ---------------------------------------------------------------------------
+// entries list: 5 most recent by default; "Show all" pages them 15 at a time
+// ---------------------------------------------------------------------------
+const TX_PREVIEW = 5;
+const TX_PAGE_SIZE = 15;
+
+// Page numbers to show, with "…" gaps once there are more than 7 pages:
+// 1 … 4 [5] 6 … 12
+function pageList(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const keep = new Set([1, total, current - 1, current, current + 1]);
+  if (current <= 3) [2, 3, 4].forEach((p) => keep.add(p));
+  if (current >= total - 2) [total - 3, total - 2, total - 1].forEach((p) => keep.add(p));
+  const pages = [...keep].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+  return pages.flatMap((p, i) => (i && p - pages[i - 1] > 1 ? ["…", p] : [p]));
+}
+
+function renderTxFooter(total, start, shown, pages) {
+  const footer = $("txFooter");
+  footer.hidden = total <= TX_PREVIEW;
+  if (footer.hidden) return (footer.innerHTML = "");
+
+  const range = `Showing ${shown === total ? "all " + total : `${start + 1}–${start + shown} of ${total}`}`;
+  let pager = "";
+  if (state.txExpanded && pages > 1) {
+    const cur = state.txPage;
+    pager = `<nav class="tx-pager" aria-label="Entry pages">
+      <button type="button" class="pager-btn" data-page="${cur - 1}" aria-label="Previous page" ${cur === 1 ? "disabled" : ""}>‹</button>
+      ${pageList(cur, pages)
+        .map((p) =>
+          p === "…"
+            ? `<span class="pager-gap" aria-hidden="true">…</span>`
+            : `<button type="button" class="pager-btn" data-page="${p}" aria-label="Page ${p}"${p === cur ? ' aria-current="page"' : ""}>${p}</button>`
+        )
+        .join("")}
+      <button type="button" class="pager-btn" data-page="${cur + 1}" aria-label="Next page" ${cur === pages ? "disabled" : ""}>›</button>
+    </nav>`;
+  }
+  const toggle = state.txExpanded
+    ? `<button type="button" class="btn-secondary tx-more" data-action="collapse" aria-expanded="true" aria-controls="txTable">Show fewer</button>`
+    : `<button type="button" class="btn-secondary tx-more" data-action="expand" aria-expanded="false" aria-controls="txTable">Show all ${total} entries</button>`;
+  footer.innerHTML = `<p class="tx-range" aria-live="polite">${range}</p>${pager}${toggle}`;
+}
+
+// Bring the top of the list back into view (below the sticky header on mobile).
+function scrollToEntries() {
+  const heading = document.querySelector("section.ledger h2");
+  if (heading.getBoundingClientRect().top < 0) heading.scrollIntoView({ block: "start" });
+}
+
+$("txFooter").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn || btn.disabled) return;
+  if (btn.dataset.action === "expand") {
+    state.txExpanded = true;
+    state.txPage = 1;
+    render();
+    $("txFooter").querySelector('[data-action="collapse"]')?.focus();
+    return;
+  }
+  if (btn.dataset.action === "collapse") {
+    state.txExpanded = false;
+    state.txPage = 1;
+    render();
+    scrollToEntries();
+    $("txFooter").querySelector('[data-action="expand"]')?.focus({ preventScroll: true });
+    return;
+  }
+  if (btn.dataset.page) {
+    state.txPage = Number(btn.dataset.page);
+    render();
+    scrollToEntries();
+    $("txFooter").querySelector(`[aria-current="page"]`)?.focus({ preventScroll: true });
+  }
+});
+
+// A different month/year starts again from the 5 most recent.
+function resetEntriesList() {
+  state.txExpanded = false;
+  state.txPage = 1;
+}
+
 $("periodMode").addEventListener("change", (e) => {
   state.periodMode = e.target.value;
   state.selectedMonth = currentMonthKey();
   state.selectedYear = currentYear();
+  resetEntriesList();
   render();
 });
 $("periodValue").addEventListener("change", (e) => {
   if (state.periodMode === "monthly") state.selectedMonth = e.target.value;
   else state.selectedYear = Number(e.target.value);
+  resetEntriesList();
   render();
 });
 
+// ---------------------------------------------------------------------------
+// Sheets: every add/edit form is a <dialog class="sheet"> (DESIGN.md "Sheets"). These two
+// functions plus the wiring below are the whole component: Escape, a tap on the backdrop and
+// any [data-sheet-close] button close it; each sheet resets its own form on "close".
+// A bottom sheet on phones and a centred dialog on wider screens (CSS only).
+// ---------------------------------------------------------------------------
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// opener: where focus goes back to. fallback: an element, or a function returning one, used
+// if the opener is gone by then (e.g. a debt card re-rendered after its Edit).
+function openSheet(sheet, { opener, fallback, focus } = {}) {
+  sheet.sheetReturn = { opener, fallback };
+  sheet.classList.remove("closing");
+  sheet.showModal();
+  (focus || sheet.querySelector("input:not([type=hidden]), select, textarea"))?.focus();
+}
+
+// Slides away, then closes. Resolves once it's gone, so anything drawn next (confetti) isn't
+// under it. Focus is returned explicitly: <dialog> restores the previous focus itself, but
+// Safari doesn't focus a button when it's tapped, so there'd be nothing to restore.
+function closeSheet(sheet) {
+  if (!sheet.open) return Promise.resolve();
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      sheet.classList.remove("closing");
+      sheet.close();
+      const { opener, fallback } = sheet.sheetReturn || {};
+      const target = [opener, typeof fallback === "function" ? fallback() : fallback]
+        .find((el) => el?.isConnected && el.checkVisibility());
+      target?.focus({ preventScroll: true });
+      resolve();
+    };
+    if (reducedMotion()) return finish();
+    sheet.classList.add("closing");
+    sheet.addEventListener("animationend", finish, { once: true });
+    setTimeout(finish, 400); // in case the animation never runs (e.g. animations disabled)
+  });
+}
+
+document.querySelectorAll("dialog.sheet").forEach((sheet) => {
+  sheet.addEventListener("cancel", (e) => {
+    e.preventDefault(); // animate instead of vanishing
+    closeSheet(sheet);
+  });
+  // The form fills the dialog, so a click whose target is the dialog itself is the backdrop.
+  sheet.addEventListener("click", (e) => {
+    if (e.target === sheet || e.target.closest("[data-sheet-close]")) closeSheet(sheet);
+  });
+});
+
+// On phones the on-screen keyboard overlays the page without resizing it, which would hide
+// a bottom sheet's fields; --kb lifts sheets above it.
+if (window.visualViewport) {
+  const syncKeyboard = () => {
+    const kb = Math.max(0, innerHeight - visualViewport.height - visualViewport.offsetTop);
+    document.documentElement.style.setProperty("--kb", `${Math.round(kb)}px`);
+  };
+  visualViewport.addEventListener("resize", syncKeyboard);
+  visualViewport.addEventListener("scroll", syncKeyboard);
+}
+
+// ---- Add transaction (sheet) ----
 const form = $("entryForm");
 const addToggle = $("addToggle");
 addToggle.addEventListener("click", () => {
-  form.classList.add("open");
   // Local date, not toISOString() (UTC), which is already "tomorrow" on US evenings.
   $("fDate").value = dayKey(new Date());
   $("formError").textContent = "";
   renderCategoryChips();
-  $("fAmount").focus();
+  openSheet($("txSheet"), { opener: addToggle, focus: $("fAmount") });
 });
-$("cancelEntry").addEventListener("click", () => {
-  form.classList.remove("open");
+$("txSheet").addEventListener("close", () => {
   form.reset();
-  syncCategoryChips();
+  txCategory.clear(); // the hidden value isn't touched by reset()
+  $("formError").textContent = "";
 });
 $("typeExpense").addEventListener("click", () => setFormType("expense"));
 $("typeIncome").addEventListener("click", () => setFormType("income"));
@@ -896,6 +1455,7 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const amount = parseFloat($("fAmount").value);
   if (!amount || amount <= 0) return;
+  if (!txCategory.validate()) return $("fCategoryInput").reportValidity();
   const errorEl = $("formError");
   const saveBtn = $("saveEntryBtn");
   errorEl.textContent = "";
@@ -915,9 +1475,8 @@ form.addEventListener("submit", async (e) => {
   try {
     const { error } = await supabase.from("transactions").insert(payload);
     if (error) throw error;
-    form.reset();
-    syncCategoryChips();
-    form.classList.remove("open");
+    closeSheet($("txSheet")); // the form resets on close
+    loadCategoryUsage(); // this entry now counts towards the chips
     state.selectedMonth = payload.date.slice(0, 7);
     state.selectedYear = Number(payload.date.slice(0, 4));
   } catch (err) {
@@ -931,7 +1490,10 @@ form.addEventListener("submit", async (e) => {
 // inline delete confirmation — the only way a transaction gets deleted
 // ---------------------------------------------------------------------------
 const txById = (id) => state.tx.find((t) => String(t.id) === String(id));
-const actionsCell = (id) => $("txBody").querySelector(`[data-actions-for="${CSS.escape(String(id))}"]`);
+// A row can appear in both lists (Dashboard and Transactions), so work on every copy, and
+// put focus in the one on the view that's showing.
+const actionsCells = (id) => [...document.querySelectorAll(`[data-actions-for="${CSS.escape(String(id))}"]`)];
+const visibleActionsCell = (id) => actionsCells(id).find((cell) => !cell.closest("[hidden]"));
 
 // A row's action cell: "Delete", or Cancel / Confirm delete while it's being confirmed.
 // The confirm buttons float over the row's right edge, and an invisible "Delete" keeps the
@@ -955,10 +1517,9 @@ function actionsHtml(t, dateStr) {
 
 function refreshRowActions(id) {
   const t = txById(id);
-  const cell = actionsCell(id);
-  if (!t || !cell) return;
+  if (!t) return;
   const dateStr = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  cell.innerHTML = actionsHtml(t, dateStr);
+  actionsCells(id).forEach((cell) => (cell.innerHTML = actionsHtml(t, dateStr)));
 }
 
 // Only one row confirms at a time: starting a new one (or cancelling) reverts the old one.
@@ -968,12 +1529,12 @@ function setConfirming(id, focus) {
   state.deleteErrorId = null;
   if (prev !== null && prev !== state.confirmingDeleteId) refreshRowActions(prev);
   if (state.confirmingDeleteId !== null) refreshRowActions(state.confirmingDeleteId);
-  if (focus === "cancel") actionsCell(id)?.querySelector(".tx-cancel")?.focus();
-  if (focus === "delete" && prev !== null) actionsCell(prev)?.querySelector(".tx-del:not(.tx-del-spacer)")?.focus();
+  if (focus === "cancel") visibleActionsCell(id)?.querySelector(".tx-cancel")?.focus();
+  if (focus === "delete" && prev !== null) visibleActionsCell(prev)?.querySelector(".tx-del:not(.tx-del-spacer)")?.focus();
 }
 
 async function deleteTransaction(id) {
-  actionsCell(id)?.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  actionsCells(id).forEach((cell) => cell.querySelectorAll("button").forEach((b) => (b.disabled = true)));
   const { error } = await supabase.from("transactions").delete().eq("id", id);
   if (error) {
     state.deleteErrorId = String(id);
@@ -987,7 +1548,7 @@ async function deleteTransaction(id) {
   render();
 }
 
-$("txBody").addEventListener("click", (e) => {
+function onTxTableClick(e) {
   const del = e.target.closest("button.tx-del:not(.tx-del-spacer)");
   const cancel = e.target.closest(".tx-cancel");
   const confirm = e.target.closest(".tx-confirm-del");
@@ -997,7 +1558,9 @@ $("txBody").addEventListener("click", (e) => {
   if (del) return setConfirming(txById(del.dataset.id)?.id ?? null, "cancel");
   if (cancel) return setConfirming(null, "delete");
   deleteTransaction(txById(confirm.dataset.id)?.id);
-});
+}
+$("txBody").addEventListener("click", onTxTableClick);
+$("txBodyAll").addEventListener("click", onTxTableClick);
 
 // Safety nets: clicking anywhere else, or pressing Esc, cancels a pending delete.
 document.addEventListener("click", (e) => {
@@ -1015,6 +1578,769 @@ $("breakdownToggle").addEventListener("click", (e) => {
   render();
 });
 
+// ---------------------------------------------------------------------------
+// views: Dashboard / Transactions / Recurring / Debts (show/hide, no router)
+// ---------------------------------------------------------------------------
+const VIEW_IDS = { dashboard: "viewDashboard", transactions: "viewTransactions", recurring: "viewRecurring", debts: "viewDebts", members: "viewMembers" };
+
+function notify(message) {
+  $("noticeBanner").textContent = message || "";
+  $("noticeBanner").hidden = !message;
+}
+
+function showAppView(name) {
+  state.view = name;
+  for (const [view, id] of Object.entries(VIEW_IDS)) $(id).hidden = view !== name;
+  document.querySelectorAll(".nav-item").forEach((btn) => {
+    const on = btn.dataset.view === name;
+    btn.classList.toggle("active", on);
+    if (on) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
+  });
+  // Only Dashboard and Transactions are period-filtered.
+  $("periodNav").hidden = !(name === "dashboard" || name === "transactions");
+  // The add-transaction form moves into whichever view has a slot for it.
+  const slot = $(VIEW_IDS[name]).querySelector(".entry-slot");
+  (slot || $("entryParking")).append($("entryArea"));
+  if (state.confirmingDeleteId !== null) setConfirming(null);
+  // An invite panel opened on the Members page doesn't follow you to other views.
+  if (name !== "members" && $("inviteSlotMembers").contains($("invitePanel"))) {
+    $("invitePanel").hidden = true;
+    $("membersInvite").setAttribute("aria-expanded", "false");
+  }
+  notify("");
+  if (name === "recurring") renderRules();
+  if (name === "debts") renderDebts();
+  window.scrollTo(0, 0);
+}
+
+// The sticky Transactions toolbar sits just under the (sticky, on mobile) header, whose height
+// changes with the view and screen width, so keep it in a CSS variable.
+new ResizeObserver(([entry]) => {
+  document.documentElement.style.setProperty("--header-h", `${Math.round(entry.borderBoxSize[0].blockSize)}px`);
+}).observe(document.querySelector("header.top"));
+
+document.querySelector(".app-nav").addEventListener("click", (e) => {
+  const btn = e.target.closest(".nav-item");
+  if (!btn) return;
+  if (state.view === "members") leaveMembers(btn.dataset.view);
+  else showAppView(btn.dataset.view);
+});
+
+// Transactions view: type filter, search, pages
+$("txFilter").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-filter]");
+  if (!btn) return;
+  state.txFilter = btn.dataset.filter;
+  state.txAllPage = 1;
+  $("txFilter").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+  render();
+});
+$("txSearch").addEventListener("input", (e) => {
+  state.txQuery = e.target.value;
+  state.txAllPage = 1;
+  render();
+});
+$("txFooterAll").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-page]");
+  if (!btn || btn.disabled) return;
+  state.txAllPage = Number(btn.dataset.page);
+  render();
+  const head = $("txViewTitle");
+  if (head.getBoundingClientRect().top < 0) head.scrollIntoView({ block: "start" });
+  $("txFooterAll").querySelector('[aria-current="page"]')?.focus({ preventScroll: true });
+});
+
+const isMissingTable = (error) => Boolean(error) && (error.code === "PGRST205" || error.code === "42P01");
+const MIGRATION_HINT = "isn't set up in the database yet. Run the latest migration from supabase/schema.sql.";
+
+// A failed insert/update, as a message that says what went wrong instead of one catch-all.
+// `checks` maps a table's check-constraint names to field-specific messages. (Missing tables
+// are handled by the caller, which swaps the form for the migration hint.)
+function saveErrorMessage(error, noun, checks = {}) {
+  console.error(`[Ledger] saving the ${noun} failed:`, error);
+  if (!error.code) return "Couldn't reach the server. Check your connection and try again.";
+  if (error.code === "23514") {
+    const constraint = /constraint "([^"]+)"/.exec(error.message || "")?.[1];
+    return checks[constraint] ?? "One of the values isn't allowed. Check the fields and try again.";
+  }
+  if (error.code === "23502") return "A required field is empty. Fill in every field not marked optional.";
+  if (error.code === "22P02") return "One of the numbers isn't valid. Check the amounts and try again.";
+  if (error.code === "42501") return `You don't have permission to save this ${noun}. Reload the app and try again.`;
+  return `Couldn't save the ${noun} (error ${error.code}). Try again.`;
+}
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+const monthStartKey = () => { const d = new Date(); return dayKey(new Date(d.getFullYear(), d.getMonth(), 1)); };
+
+// ---------------------------------------------------------------------------
+// recurring rules
+// ---------------------------------------------------------------------------
+// Creates this month's entries for rules whose day has arrived. Runs server-side in one
+// transaction (see materialize_recurring in schema.sql), so two devices can't double-insert.
+// LIMITATION: it only runs when someone opens the app. A Supabase pg_cron job calling the same
+// function daily would make it independent of app usage; see DESIGN.md.
+async function runRecurringRules() {
+  const { data, error } = await supabase.rpc("materialize_recurring", { hid: state.household.id, today: dayKey(new Date()) });
+  if (error) {
+    if (error.code !== "PGRST202") console.warn("[Ledger] recurring rules not applied:", error.code, error.message);
+    return 0;
+  }
+  return data || 0;
+}
+
+async function loadRules() {
+  const { data, error } = await supabase.from("recurring_rules").select("*").eq("household_id", state.household.id).order("day_of_month");
+  state.missing.rules = isMissingTable(error);
+  if (!error) state.rules = data;
+  if (state.view === "recurring") renderRules();
+}
+
+function nextRunDate(rule) {
+  const now = new Date();
+  return rule.day_of_month > now.getDate()
+    ? new Date(now.getFullYear(), now.getMonth(), rule.day_of_month)
+    : new Date(now.getFullYear(), now.getMonth() + 1, rule.day_of_month);
+}
+
+function renderRules() {
+  const list = $("ruleList");
+  const empty = $("ruleEmpty");
+  empty.dataset.default ??= empty.textContent;
+  $("ruleAddToggle").hidden = state.missing.rules;
+  if (state.missing.rules) {
+    list.innerHTML = "";
+    empty.textContent = "Recurring rules " + MIGRATION_HINT;
+    empty.style.display = "block";
+    return;
+  }
+  empty.textContent = empty.dataset.default;
+  empty.style.display = state.rules.length ? "none" : "block";
+  const myId = state.session?.user?.id;
+  list.innerHTML = state.rules
+    .map((r) => {
+      const mine = r.created_by === myId;
+      const who = escapeHtml(state.names[r.created_by] || "your partner");
+      const title = escapeHtml(r.note || r.category);
+      // One compact row: name + amount, then "category · Next Oct 1" (or "Paused · 5th"),
+      // with the switch on the same row. The switch's position shows active/paused.
+      const when = r.active ? `Next ${shortDate(nextRunDate(r))}` : `Paused · ${ordinal(r.day_of_month)}`;
+      return `<li class="rule-row${r.active ? "" : " paused"}">
+        <p class="rule-name">${title}</p>
+        <p class="rule-amt ${r.type}">${r.type === "expense" ? "-" : "+"}${fmtMoney(Number(r.amount))}</p>
+        <p class="rule-meta">${escapeHtml(r.category)} · ${when}${mine ? "" : ` · ${who}`}</p>
+        <button type="button" class="switch" role="switch" aria-checked="${r.active}" aria-label="${title}, recurring ${r.active ? "" : "(paused)"}"
+          data-rule="${escapeHtml(r.id)}" title="${mine ? (r.active ? "Active. Tap to pause" : "Paused. Tap to resume") : `Only ${who} can pause or resume this rule`}"${mine ? "" : " disabled"}>
+          <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+        </button>
+      </li>`;
+    })
+    .join("");
+}
+
+$("ruleList").addEventListener("click", async (e) => {
+  const sw = e.target.closest(".switch[data-rule]");
+  if (!sw || sw.disabled) return;
+  const rule = state.rules.find((r) => r.id === sw.dataset.rule);
+  if (!rule) return;
+  const patch = { active: !rule.active };
+  // Resuming after this month's day has passed starts next month instead of backdating an entry.
+  if (!rule.active && rule.day_of_month <= new Date().getDate() && !(rule.last_materialized_month >= monthStartKey())) {
+    patch.last_materialized_month = monthStartKey();
+  }
+  sw.disabled = true;
+  const { data, error } = await supabase.from("recurring_rules").update(patch).eq("id", rule.id).select().maybeSingle();
+  if (error || !data) {
+    sw.disabled = false;
+    return notify("Couldn't update that rule. Check your connection and try again.");
+  }
+  Object.assign(rule, data);
+  renderRules();
+  document.querySelector(`.switch[data-rule="${CSS.escape(rule.id)}"]`)?.focus();
+});
+
+function setRuleType(type) {
+  state.ruleType = type;
+  $("ruleType").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.type === type));
+  fillCategorySelect($("rCategory"), type);
+}
+$("ruleType").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-type]");
+  if (btn) setRuleType(btn.dataset.type);
+});
+
+// If the chosen day already passed this month, ask whether to add this month's entry now
+// (default: no, it was probably already entered by hand) instead of silently backdating one.
+function updateRuleNowRow() {
+  const day = Number($("rDay").value);
+  const passed = day <= new Date().getDate();
+  $("rNowRow").hidden = !passed;
+  if (passed) $("rNowText").textContent = `Also add this month's entry now (the ${ordinal(day)} has passed)`;
+  else $("rNow").checked = false;
+}
+$("rDay").addEventListener("change", updateRuleNowRow);
+
+const closeRuleForm = () => closeSheet($("ruleSheet"));
+$("ruleSheet").addEventListener("close", () => {
+  $("ruleForm").reset();
+  $("ruleError").textContent = "";
+});
+$("ruleAddToggle").addEventListener("click", () => {
+  setRuleType(state.ruleType);
+  $("ruleError").textContent = "";
+  updateRuleNowRow();
+  openSheet($("ruleSheet"), { opener: $("ruleAddToggle"), focus: $("rAmount") });
+});
+
+$("ruleForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const amount = Math.round(parseFloat($("rAmount").value) * 100) / 100;
+  const category = $("rCategory").value;
+  const day = Number($("rDay").value);
+  if (!(amount > 0) || !category) return;
+  const passed = day <= new Date().getDate();
+  const addNow = passed && $("rNow").checked;
+  $("ruleSave").disabled = true;
+  const { error } = await supabase.from("recurring_rules").insert({
+    household_id: state.household.id,
+    type: state.ruleType,
+    amount,
+    category,
+    note: $("rNote").value.trim(),
+    day_of_month: day,
+    created_by: state.session.user.id,
+    // Marks this month as handled so the rule starts next month.
+    last_materialized_month: passed && !addNow ? monthStartKey() : null
+  });
+  $("ruleSave").disabled = false;
+  if (error) {
+    if (isMissingTable(error)) {
+      state.missing.rules = true;
+      closeRuleForm();
+      renderRules();
+      return;
+    }
+    $("ruleError").textContent = saveErrorMessage(error, "rule", {
+      recurring_rules_amount_check: "Amount must be above $0.",
+      recurring_rules_day_of_month_check: "Choose a day from 1 to 28.",
+      recurring_rules_type_check: "Choose Expense or Income."
+    });
+    return;
+  }
+  closeRuleForm();
+  if (addNow && (await runRecurringRules()) > 0 && (await fetchTransactions())) render();
+  await loadRules();
+  notify(addNow ? "Rule saved, and this month's entry was added." : "Rule saved.");
+});
+
+// ---------------------------------------------------------------------------
+// debts
+// ---------------------------------------------------------------------------
+const DEBT_TYPES = { credit_card: "Credit card", loan: "Loan", mortgage: "Mortgage", other: "Other" };
+
+async function loadDebts() {
+  const { data, error } = await supabase.from("debts").select("*").eq("household_id", state.household.id).order("created_at");
+  state.missing.debts = isMissingTable(error);
+  if (!error) state.debts = data;
+  if (state.view === "debts") renderDebts();
+}
+
+// Plain arithmetic, deliberately simple: months = balance ÷ minimum payment. It ignores interest,
+// so it's labelled a rough estimate, with a warning when interest would make it misleading.
+function payoffEstimate(d) {
+  const balance = Number(d.current_balance);
+  const minimum = Number(d.minimum_payment) || 0;
+  const apr = d.interest_rate == null ? null : Number(d.interest_rate);
+  if (balance <= 0) return { text: "Paid off.", warn: "" };
+  if (!minimum) return { text: "Add a minimum monthly payment to see a rough payoff date.", warn: "" };
+  const months = Math.ceil(balance / minimum);
+  const when = new Date();
+  when.setDate(1);
+  when.setMonth(when.getMonth() + months);
+  // The APR and minimum are already in the facts line above this, so these don't repeat them.
+  const text = `Rough estimate: paid off around ${when.toLocaleDateString(undefined, { month: "long", year: "numeric" })} ` +
+    `(${months} month${months === 1 ? "" : "s"}), paying the minimum and ignoring interest.`;
+  let warn = "";
+  if (apr) {
+    const monthlyInterest = (balance * apr) / 100 / 12;
+    warn = monthlyInterest >= minimum
+      ? `Interest adds about ${fmtMoney(monthlyInterest)} a month, as much as the minimum, so paying only the minimum won't bring this down.`
+      : `About ${fmtMoney(monthlyInterest)} of each payment goes to interest, so the real date will be later.`;
+  }
+  return { text, warn };
+}
+
+// All debts as one journey, computed from the sums (not an average of per-debt percentages,
+// which would understate progress on the largest debt). Percentages round DOWN, so "50%"
+// never shows before half is really paid.
+const MILESTONES = [25, 50, 75];
+function debtTotals(debts = state.debts) {
+  const original = debts.reduce((sum, d) => sum + Number(d.original_balance), 0);
+  const current = debts.reduce((sum, d) => sum + Number(d.current_balance), 0);
+  const paid = Math.max(0, original - current);
+  const pct = original > 0 ? Math.min(100, (paid / original) * 100) : 0;
+  return { original, current, paid, pct };
+}
+const floorPct = (pct) => (pct >= 100 ? 100 : Math.floor(pct));
+
+// Red means "needs attention", never "a debt exists": only a debt with a balance and no
+// payment logged for this many days (counted from when it was added, if it never had one).
+const ATTENTION_DAYS = 45;
+function daysWithoutPayment(d) {
+  const last = state.tx.reduce((latest, t) => (t.debt_id === d.id && t.date > latest ? t.date : latest), "");
+  const since = last ? new Date(`${last}T00:00:00`) : new Date(d.created_at);
+  return Math.floor((Date.now() - since) / 86400000);
+}
+
+function renderJourney() {
+  const el = $("debtJourney");
+  el.hidden = state.missing.debts || !state.debts.length;
+  if (el.hidden) return;
+  const { original, current, paid, pct } = debtTotals();
+  // Exact to one decimal, rounded DOWN (49.96% shows 49.9%, never an early 50.0%).
+  const shown = pct >= 100 ? "100" : (Math.floor(pct * 10) / 10).toFixed(1);
+  // Draw at the last value first, then move, so progress visibly grows (the fill follows
+  // --p, a registered property; the percentage below follows with a matching transition).
+  const from = state.journeyPct ?? pct;
+  state.journeyPct = pct;
+  // One statement per fact: the amount (headline), the bar, and the percentage in the caption
+  // row under the end of the fill. "Start" doubles as a toggle for the total starting debt.
+  el.innerHTML = `
+    <p class="journey-paid"><span class="journey-amt">${fmtMoney(paid)}</span> paid off</p>
+    <div class="journey-path" style="--p: ${from}">
+      <div class="journey-track" role="progressbar" aria-label="Debt-free journey" aria-valuemin="0" aria-valuemax="100"
+        aria-valuenow="${shown}" aria-valuetext="${shown}% paid off, ${fmtMoney(current)} to go of ${fmtMoney(original)}">
+        <span class="journey-fill"></span>
+      </div>
+      ${MILESTONES.map((m) => `<span class="journey-dot${pct >= m ? " reached" : ""}" style="left: ${m}%" title="${m}%" aria-hidden="true"></span>`).join("")}
+      <span class="journey-flag${current <= 0 ? " reached" : ""}" aria-hidden="true">
+        <svg viewBox="0 0 16 16"><path d="M4.5 14V2"/><path class="pennant" d="M4.5 2.5l8 3-8 3z"/></svg>
+      </span>
+    </div>
+    <div class="journey-labels">
+      <button type="button" class="journey-start" aria-pressed="${Boolean(state.journeyShowTotal)}"
+        title="Show the total you started with">${state.journeyShowTotal ? `${fmtMoney(original)} total` : "Start"}</button>
+      <span class="journey-pct" aria-hidden="true">${shown}%</span>
+      <span class="end${current <= 0 ? " reached" : ""}" aria-hidden="true">$0</span>
+    </div>`;
+  el.querySelector(".journey-start").addEventListener("click", () => {
+    state.journeyShowTotal = !state.journeyShowTotal;
+    const start = el.querySelector(".journey-start");
+    start.textContent = state.journeyShowTotal ? `${fmtMoney(original)} total` : "Start";
+    start.setAttribute("aria-pressed", String(state.journeyShowTotal));
+    placeJourneyPct(el, pct, false); // the wider label may push the percentage along
+  });
+  placeJourneyPct(el, from, false);
+  requestAnimationFrame(() => {
+    el.querySelector(".journey-path")?.style.setProperty("--p", String(pct));
+    placeJourneyPct(el, pct, true);
+  });
+}
+
+// The percentage is placed in pixels, so re-place it whenever the card's width changes
+// (including the view going from hidden, width 0, to shown).
+new ResizeObserver(() => {
+  const el = $("debtJourney");
+  if (!el.hidden && state.journeyPct != null) placeJourneyPct(el, state.journeyPct, false);
+}).observe($("debtJourney"));
+
+// Puts the percentage under the end of the fill: at p% of the row, shifted back by p% of its
+// own width (left-aligned at 0%, right-aligned at 100%, always covering the fill point), but
+// never over "Start" or "$0", so near either end it pins just beside them.
+function placeJourneyPct(el, p, animate) {
+  const row = el.querySelector(".journey-labels");
+  const label = el.querySelector(".journey-pct");
+  if (!row || !label) return;
+  const w = row.clientWidth;
+  const own = label.offsetWidth;
+  const gap = 10;
+  const start = el.querySelector(".journey-start");
+  // offsetLeft/Width include the button's tap-target padding (6px each side), so its text
+  // ends 6px before its box does.
+  const min = start.offsetLeft + start.offsetWidth - 6 + gap;
+  const endLabel = el.querySelector(".journey-labels .end");
+  const max = w - endLabel.offsetWidth / 2 - gap - own; // "$0" is centred on the bar's end
+  const left = Math.min(Math.max((w * p) / 100 - (own * p) / 100, min), Math.max(min, max));
+  label.classList.toggle("animate", animate);
+  label.style.left = `${left}px`;
+}
+
+// A short, non-blocking celebration: a toast with the concrete result, plus a confetti burst
+// from the debt's bar (skipped for reduced motion). Gone in about 1.5 s; no dismiss needed.
+function celebrate(headline, detail, origin) {
+  const toast = $("celebrate");
+  toast.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9"/><path d="M6 10.5l2.6 2.5L14 7.5"/></svg>
+    <span><b>${escapeHtml(headline)}</b><span>${escapeHtml(detail)}</span></span>`;
+  toast.classList.remove("show");
+  void toast.offsetWidth; // restart the transition if a second payment lands quickly
+  toast.classList.add("show");
+  clearTimeout(celebrate.timer);
+  celebrate.timer = setTimeout(() => toast.classList.remove("show"), 1500);
+  if (!origin) {
+    const t = toast.getBoundingClientRect();
+    origin = { x: t.left + t.width / 2, y: t.top };
+  }
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) confetti(origin);
+}
+
+function confetti({ x, y }) {
+  const layer = document.createElement("div");
+  layer.className = "confetti";
+  layer.setAttribute("aria-hidden", "true");
+  document.body.append(layer);
+  const colors = ["var(--green)", "var(--brass)", "var(--activity-cyan)", "var(--activity-green)"];
+  for (let i = 0; i < 28; i++) {
+    const bit = document.createElement("span");
+    bit.style.cssText = `left:${x}px; top:${y}px; background:${colors[i % colors.length]}`;
+    layer.append(bit);
+    const angle = ((-90 + (Math.random() * 130 - 65)) * Math.PI) / 180; // an upward fan
+    const speed = 80 + Math.random() * 110;
+    const dx = Math.cos(angle) * speed;
+    const dy = Math.sin(angle) * speed;
+    const spin = (Math.random() * 2 - 1) * 540;
+    bit.animate(
+      [
+        { transform: "translate(-50%, -50%) rotate(0deg)", opacity: 1 },
+        { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(${spin / 2}deg)`, opacity: 1, offset: 0.45 },
+        { transform: `translate(calc(-50% + ${dx * 1.3}px), calc(-50% + ${dy + 150}px)) rotate(${spin}deg)`, opacity: 0 }
+      ],
+      { duration: 950 + Math.random() * 250, easing: "cubic-bezier(.2, .7, .3, 1)", fill: "forwards" }
+    );
+  }
+  setTimeout(() => layer.remove(), 1300);
+}
+
+function paymentFormHtml(d) {
+  const id = escapeHtml(d.id);
+  return `<form class="pay-form" data-pay="${id}">
+    <div class="field">
+      <label for="pay-amt-${id}">Payment amount</label>
+      <input type="number" class="pay-amount" id="pay-amt-${id}" step="0.01" min="0.01" max="${Number(d.current_balance)}" value="${d.minimum_payment ? Math.min(Number(d.minimum_payment), Number(d.current_balance)) : ""}" required>
+    </div>
+    <div class="field">
+      <label for="pay-date-${id}">Date</label>
+      <input type="date" class="pay-date" id="pay-date-${id}" value="${dayKey(new Date())}" max="${dayKey(new Date())}" required>
+    </div>
+    <p class="field-help pay-help">Lowers the balance and adds the same amount to Transactions as an expense (Loan &amp; card payments).</p>
+    <p class="form-error pay-error" role="alert"></p>
+    <div class="form-actions">
+      <button type="button" class="btn-secondary" data-act="cancel-pay">Cancel</button>
+      <button type="submit" class="btn-primary">Save payment</button>
+    </div>
+  </form>`;
+}
+
+function renderDebts() {
+  const list = $("debtList");
+  const empty = $("debtEmpty");
+  empty.dataset.default ??= empty.textContent;
+  // One piece of state drives the primary button: with a debt to pay it's "Log a payment"
+  // (opens the sheet) and adding moves to the small "+" by the title; otherwise "+ Add debt".
+  // Fully paid-off debts don't count, since there'd be nothing to pay.
+  const canPay = !state.missing.debts && state.debts.some((d) => Number(d.current_balance) > 0);
+  const primary = $("debtPrimary");
+  primary.hidden = state.missing.debts;
+  primary.textContent = canPay ? "Log a payment" : "+ Add debt";
+  primary.dataset.action = canPay ? "pay" : "add";
+  primary.setAttribute("aria-haspopup", canPay ? "dialog" : "false");
+  $("debtTitleAdd").hidden = !canPay;
+  renderJourney();
+  if (state.missing.debts) {
+    list.innerHTML = "";
+    empty.textContent = "Debts " + MIGRATION_HINT;
+    empty.style.display = "block";
+    return;
+  }
+  empty.textContent = empty.dataset.default;
+  empty.style.display = state.debts.length ? "none" : "block";
+  const myId = state.session?.user?.id;
+  list.innerHTML = state.debts
+    .map((d) => {
+      const original = Number(d.original_balance);
+      const current = Number(d.current_balance);
+      const paidOff = Math.max(0, original - current);
+      const pct = floorPct(Math.min(1, paidOff / original) * 100);
+      const est = payoffEstimate(d);
+      const mine = d.created_by === myId;
+      // Secondary detail, shown only under "More info" (the card itself states paid off once).
+      const facts = [
+        current > 0 ? `${fmtMoney(current)} left of ${fmtMoney(original)}` : `Paid in full (${fmtMoney(original)})`,
+        `${pct}% paid off`,
+        d.interest_rate != null ? `${Number(d.interest_rate)}% APR` : null,
+        d.minimum_payment ? `${fmtMoney(Number(d.minimum_payment))}/mo minimum` : null
+      ].filter(Boolean).join(" · ");
+      const idle = current > 0 ? daysWithoutPayment(d) : 0;
+      const id = escapeHtml(d.id);
+      const name = escapeHtml(d.name);
+      const open = state.expandedDebts.has(d.id);
+      const paying = state.payingDebtId === d.id;
+      // Collapsed: name + type, paid off (the lead number), bar, what's left, one dominant
+      // action. The rest lives behind "More info"; Edit is a small icon.
+      return `<article class="card debt-card" data-debt="${id}">
+        <div class="debt-head">
+          <p class="debt-name"><b>${name}</b></p>
+          <p class="debt-paidoff"><b>${fmtMoney(paidOff)}</b> paid off</p>
+        </div>
+        <div class="debt-progress" role="progressbar" aria-label="${name} paid off" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-valuetext="${pct}% paid off, ${fmtMoney(current)} left">
+          <span style="width: ${pct}%"></span>
+        </div>
+        ${idle > ATTENTION_DAYS ? `<p class="debt-attention"><span class="attention-dot" aria-hidden="true"></span><span class="visually-hidden">Needs attention: </span>No payment in ${idle} days</p>` : ""}
+        <!-- Two columns, like the row above: the primary action under the name, the
+             secondary actions under "$X paid off". -->
+        <div class="debt-actions">
+          ${current > 0
+            ? `<button type="button" class="btn-primary btn-sm debt-pay" data-act="pay" aria-expanded="${paying}">Log a payment</button>`
+            : `<span class="debt-paid">Paid off</span>`}
+          <div class="debt-secondary">
+            <button type="button" class="debt-more" data-act="more" aria-expanded="${open}" aria-controls="debt-info-${id}">
+              More info<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+            </button>
+            ${mine
+              ? `<button type="button" class="icon-btn" data-act="edit" aria-label="Edit ${name}" title="Edit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 2.3a1.5 1.5 0 0 1 2.1 0l.5.5a1.5 1.5 0 0 1 0 2.1L5.6 13H3v-2.6z"/></svg></button>`
+              : ""}
+          </div>
+        </div>
+        ${paying ? paymentFormHtml(d) : ""}
+        <div class="debt-info" id="debt-info-${id}"${open ? "" : " hidden"}>
+          <p class="debt-type-label">${DEBT_TYPES[d.debt_type] || "Debt"}</p>
+          <p class="card-meta">${facts}</p>
+          <p class="debt-estimate">${escapeHtml(est.text)}</p>
+          ${est.warn ? `<p class="debt-note">${escapeHtml(est.warn)}</p>` : ""}
+          ${mine ? "" : `<p class="card-meta">Added by ${escapeHtml(state.names[d.created_by] || "your partner")}. Only they can edit it; anyone can log a payment.</p>`}
+        </div>
+      </article>`;
+    })
+    .join("");
+}
+
+function openDebtForm(debt, opener) {
+  state.editingDebtId = debt ? debt.id : null;
+  $("debtFormTitle").textContent = debt ? `Edit ${debt.name}` : "Add a debt";
+  $("debtSave").textContent = debt ? "Save changes" : "Save debt";
+  $("dName").value = debt ? debt.name : "";
+  $("dType").value = debt ? debt.debt_type : "credit_card";
+  $("dOriginal").value = debt ? debt.original_balance : "";
+  $("dCurrent").value = debt ? debt.current_balance : "";
+  $("dRate").value = debt && debt.interest_rate != null ? debt.interest_rate : "";
+  $("dMin").value = debt && debt.minimum_payment != null ? debt.minimum_payment : "";
+  $("debtError").textContent = "";
+  // After an edit the card is re-rendered, so fall back to that debt's new Edit button.
+  const editButton = () => debt && $("debtList").querySelector(`[data-debt="${CSS.escape(debt.id)}"] [data-act="edit"]`);
+  openSheet($("debtSheet"), { opener, fallback: () => editButton() || $("debtPrimary"), focus: $("dName") });
+}
+const closeDebtForm = () => closeSheet($("debtSheet"));
+$("debtSheet").addEventListener("close", () => {
+  state.editingDebtId = null;
+  $("debtForm").reset();
+  $("debtError").textContent = "";
+});
+$("debtPrimary").addEventListener("click", (e) =>
+  e.currentTarget.dataset.action === "pay" ? openPaySheet() : openDebtForm(null, e.currentTarget)
+);
+$("debtTitleAdd").addEventListener("click", (e) => openDebtForm(null, e.currentTarget));
+
+// Keyed by the debts table's check-constraint names (Postgres's default <table>_<column>_check).
+const DEBT_CHECKS = {
+  debts_name_check: "Enter a name for the debt (up to 80 characters).",
+  debts_debt_type_check: "Choose a type from the list.",
+  debts_original_balance_check: "Original balance must be above $0.",
+  debts_current_balance_check: "Current balance can't be negative.",
+  debts_interest_rate_check: "Interest rate must be between 0 and 100%, or left blank.",
+  debts_minimum_payment_check: "Minimum payment must be above $0, or left blank."
+};
+
+$("debtForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const num = (id) => ($(id).value === "" ? null : Math.round(parseFloat($(id).value) * 100) / 100);
+  const payload = {
+    name: $("dName").value.trim(),
+    debt_type: $("dType").value,
+    original_balance: num("dOriginal"),
+    current_balance: num("dCurrent"),
+    interest_rate: num("dRate"),
+    minimum_payment: num("dMin")
+  };
+  // The browser's own validation (required/min/max) normally stops these first.
+  const invalid =
+    !payload.name ? ["dName", DEBT_CHECKS.debts_name_check] :
+    !(payload.original_balance > 0) ? ["dOriginal", DEBT_CHECKS.debts_original_balance_check] :
+    !(payload.current_balance >= 0) ? ["dCurrent", DEBT_CHECKS.debts_current_balance_check] :
+    payload.interest_rate != null && !(payload.interest_rate >= 0 && payload.interest_rate <= 100) ? ["dRate", DEBT_CHECKS.debts_interest_rate_check] :
+    payload.minimum_payment != null && !(payload.minimum_payment > 0) ? ["dMin", DEBT_CHECKS.debts_minimum_payment_check] :
+    null;
+  if (invalid) {
+    $("debtError").textContent = invalid[1];
+    $(invalid[0]).focus();
+    return;
+  }
+  $("debtError").textContent = "";
+  $("debtSave").disabled = true;
+  // .select("id") on update: RLS makes an update of a row you can't edit match nothing
+  // (no error), so an empty result is how that case shows up.
+  const { data, error } = state.editingDebtId
+    ? await supabase.from("debts").update(payload).eq("id", state.editingDebtId).select("id")
+    : await supabase.from("debts").insert({ ...payload, household_id: state.household.id, created_by: state.session.user.id });
+  $("debtSave").disabled = false;
+  if (error) {
+    if (isMissingTable(error)) {
+      state.missing.debts = true;
+      closeDebtForm();
+      renderDebts();
+      return;
+    }
+    $("debtError").textContent = saveErrorMessage(error, "debt", DEBT_CHECKS);
+    return;
+  }
+  if (state.editingDebtId && !data?.length) {
+    $("debtError").textContent = "This debt was deleted, or was added by someone else, so it can't be edited. Reload the app.";
+    return;
+  }
+  const editedId = state.editingDebtId;
+  const closed = closeDebtForm();
+  await loadDebts();
+  notify(editedId ? "Debt updated." : "Debt added.");
+  // If the reload replaced the Edit button after the sheet had already given it focus,
+  // land on that debt's new Edit button.
+  await closed;
+  if (!document.activeElement || document.activeElement === document.body) {
+    const edit = editedId && $("debtList").querySelector(`[data-debt="${CSS.escape(editedId)}"] [data-act="edit"]`);
+    (edit || $("debtPrimary")).focus({ preventScroll: true });
+  }
+});
+
+const PAYMENT_ERRORS = {
+  more_than_balance: "That's more than the remaining balance.",
+  invalid_amount: "Enter an amount above $0.",
+  debt_not_found: "This debt no longer exists. Reload the app."
+};
+
+$("debtList").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const debt = state.debts.find((d) => d.id === btn.closest("[data-debt]")?.dataset.debt);
+  if (!debt) return;
+  if (btn.dataset.act === "edit") return openDebtForm(debt, btn);
+  const cardFor = () => document.querySelector(`[data-debt="${CSS.escape(debt.id)}"]`);
+  if (btn.dataset.act === "more") {
+    if (state.expandedDebts.has(debt.id)) state.expandedDebts.delete(debt.id);
+    else state.expandedDebts.add(debt.id);
+    renderDebts();
+    return cardFor()?.querySelector('[data-act="more"]')?.focus();
+  }
+  // "Log a payment" toggles its form; the form's Cancel closes it.
+  state.payingDebtId = btn.dataset.act === "pay" && state.payingDebtId !== debt.id ? debt.id : null;
+  renderDebts();
+  if (state.payingDebtId) cardFor()?.querySelector(".pay-amount")?.focus();
+  else cardFor()?.querySelector('[data-act="pay"]')?.focus();
+});
+
+$("debtList").addEventListener("submit", async (e) => {
+  const form = e.target.closest(".pay-form");
+  if (!form) return;
+  e.preventDefault();
+  const debt = state.debts.find((d) => d.id === form.dataset.pay);
+  const amount = Math.round(parseFloat(form.querySelector(".pay-amount").value) * 100) / 100;
+  const paidOn = form.querySelector(".pay-date").value;
+  if (!debt || !(amount > 0)) return;
+  form.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const card = () => $("debtList").querySelector(`[data-debt="${CSS.escape(debt.id)}"]`);
+  // The form (and its focused Save button) is gone afterwards, so focus goes back to the card.
+  const failed = await logDebtPayment(debt, amount, paidOn, {
+    refocus: () => card()?.querySelector(".debt-pay, .debt-more")?.focus({ preventScroll: true })
+  });
+  if (failed) {
+    form.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    form.querySelector(".pay-error").textContent = failed;
+  }
+});
+
+// The one "log a payment" action, used by a card's inline form and by the bottom sheet.
+// Saves it, shows the new balance at once (the function returns it), runs onSaved (e.g. the
+// sheet closing), then celebrates; the full reload happens in the background.
+// Returns an error message, or null on success.
+async function logDebtPayment(debt, amount, paidOn, { onSaved, refocus }) {
+  const { data: newBalance, error } = await supabase.rpc("log_debt_payment", { target_debt: debt.id, pay_amount: amount, paid_on: paidOn });
+  if (error) {
+    return error.code === "PGRST202" ? "Debt payments " + MIGRATION_HINT : PAYMENT_ERRORS[error.message] ?? "Couldn't save the payment. Try again.";
+  }
+  const before = debtTotals();
+  debt.current_balance = newBalance != null ? Number(newBalance) : Math.max(0, Number(debt.current_balance) - amount);
+  const after = debtTotals();
+  state.payingDebtId = null;
+  renderDebts();
+  await onSaved?.();
+  const original = Number(debt.original_balance);
+  const debtPct = floorPct(Math.min(1, Math.max(0, original - debt.current_balance) / original) * 100);
+  const crossed = MILESTONES.filter((m) => before.pct < m && after.pct >= m).pop();
+  const headline = debt.current_balance <= 0 ? `${debt.name} is paid off!` : `${fmtMoney(amount)} closer to debt-free`;
+  const detail =
+    after.current <= 0 ? "That was the last one. You're debt-free!"
+    : debt.current_balance <= 0 ? `${fmtMoney(amount)} closer to debt-free.`
+    : crossed ? `You've passed ${crossed}% of the way to debt-free.`
+    : `You've now paid off ${debtPct}% of ${debt.name}.`;
+  // The banner goes in first: it shifts the page down, and the confetti needs final positions.
+  notify(`Logged a ${fmtMoney(amount)} payment on ${debt.name}. It's also in Transactions as an expense.`);
+  // Confetti bursts from the tip of this debt's bar when it's on screen, else from the toast.
+  const r = $("debtList").querySelector(`[data-debt="${CSS.escape(debt.id)}"] .debt-progress`)?.getBoundingClientRect();
+  const onScreen = r && r.bottom > 0 && r.top < innerHeight;
+  celebrate(headline, detail, onScreen ? { x: r.left + (r.width * debtPct) / 100, y: r.top + r.height / 2 } : null);
+  refocus();
+  if (await fetchTransactions()) render();
+  const focused = document.activeElement;
+  await loadDebts(); // re-renders the cards
+  if (!focused?.isConnected) refocus();
+  return null;
+}
+
+// ---- "Log a payment" sheet (uses the shared sheet component) ----
+function sheetDefaultAmount(debt) {
+  const balance = Number(debt.current_balance);
+  $("sheetAmount").max = String(balance);
+  $("sheetAmount").value = debt.minimum_payment ? String(Math.min(Number(debt.minimum_payment), balance)) : "";
+}
+
+function openPaySheet() {
+  const payable = state.debts.filter((d) => Number(d.current_balance) > 0);
+  if (!payable.length) return;
+  // Every debt is listed so it's clear what exists; paid-off ones can't take a payment.
+  // With a single debt to pay it's preselected; with several you choose.
+  const options = state.debts.map((d) => {
+    const opt = new Option(Number(d.current_balance) > 0 ? d.name : `${d.name} (paid off)`, d.id);
+    opt.disabled = Number(d.current_balance) <= 0;
+    return opt;
+  });
+  if (payable.length > 1) {
+    const placeholder = new Option("Choose a debt", "", true, true);
+    placeholder.disabled = true;
+    options.unshift(placeholder);
+  }
+  $("sheetDebt").replaceChildren(...options);
+  $("sheetDebt").value = payable.length === 1 ? payable[0].id : "";
+  if (payable.length === 1) sheetDefaultAmount(payable[0]);
+  else $("sheetAmount").value = "";
+  $("sheetError").textContent = "";
+  $("sheetSubmit").disabled = false;
+  openSheet($("paySheet"), { opener: $("debtPrimary"), focus: payable.length === 1 ? $("sheetAmount") : $("sheetDebt") });
+}
+
+$("sheetDebt").addEventListener("change", () => {
+  const debt = state.debts.find((d) => d.id === $("sheetDebt").value);
+  if (debt) sheetDefaultAmount(debt);
+});
+$("paySheetForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const debt = state.debts.find((d) => d.id === $("sheetDebt").value);
+  const amount = Math.round(parseFloat($("sheetAmount").value) * 100) / 100;
+  if (!debt || !(amount > 0)) return;
+  $("sheetError").textContent = "";
+  $("sheetSubmit").disabled = true;
+  const failed = await logDebtPayment(debt, amount, dayKey(new Date()), {
+    onSaved: () => closeSheet($("paySheet")), // resolves once it's gone, so confetti isn't under it
+    refocus: () => $("debtPrimary").focus({ preventScroll: true })
+  });
+  $("sheetSubmit").disabled = false;
+  if (failed) $("sheetError").textContent = failed;
+});
+
 async function fetchTransactions() {
   const { data, error } = await supabase
     .from("transactions")
@@ -1029,23 +2355,37 @@ async function fetchTransactions() {
 
 // Realtime doesn't send DELETE events on our filtered channel, so a partner's deletes
 // would otherwise only show after a reload. Re-sync whenever the app comes back into view.
+// At most once every 30 s: flicking between apps (or a browser resizing) can fire this repeatedly.
+let lastForegroundSync = 0;
 document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && state.household && (await fetchTransactions())) render();
+  if (document.visibilityState !== "visible" || !state.household) return;
+  if (Date.now() - lastForegroundSync < 30000) return;
+  lastForegroundSync = Date.now();
+  const added = await runRecurringRules(); // a new day may have made a rule due
+  if (await fetchTransactions()) render();
+  if (added > 0) notify(`Added ${added} recurring ${added === 1 ? "entry" : "entries"} for this month.`);
+  loadRules();
+  loadDebts();
+  loadCategoryUsage();
 });
 
 async function startLedger() {
   populateCategorySelect();
   renderPeriodControls();
-  setSyncStatus("connecting");
 
+  // Due recurring entries are created first, so the first fetch already includes them.
+  lastForegroundSync = Date.now(); // start-up is itself a fresh sync
+  const autoAdded = await runRecurringRules();
   if (!(await fetchTransactions())) {
-    setSyncStatus("off");
     $("permBanner").style.display = "block";
     $("permBanner").textContent = "Couldn't load transactions. Reload to try again.";
     return;
   }
-  setSyncStatus("live");
   render();
+  if (autoAdded > 0) notify(`Added ${autoAdded} recurring ${autoAdded === 1 ? "entry" : "entries"} for this month.`);
+  loadRules();
+  loadDebts();
+  loadCategoryUsage();
 
   if (state.realtimeChannel) supabase.removeChannel(state.realtimeChannel);
   state.realtimeChannel = supabase
@@ -1064,9 +2404,7 @@ async function startLedger() {
         render();
       }
     )
-    .subscribe((status) => {
-      setSyncStatus(status === "SUBSCRIBED" ? "live" : status === "CHANNEL_ERROR" ? "off" : "connecting");
-    });
+    .subscribe();
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,8 +2412,18 @@ async function startLedger() {
 // ---------------------------------------------------------------------------
 function resetSignedInState() {
   if (state.realtimeChannel) supabase.removeChannel(state.realtimeChannel);
-  Object.assign(state, { routedUserId: null, household: null, names: {}, inviteLink: null, tx: [], realtimeChannel: null });
+  Object.assign(state, {
+    routedUserId: null, household: null, names: {}, inviteLink: null, tx: [], realtimeChannel: null,
+    rules: [], debts: [], payingDebtId: null, editingDebtId: null, txQuery: "", txFilter: "all", txAllPage: 1
+  });
+  state.members = [];
+  state.journeyPct = undefined;
+  state.categoryUsage = null;
+  document.querySelectorAll("dialog.sheet[open]").forEach((sheet) => sheet.close());
+  showAppView("dashboard");
+  $("inviteSlotTop").append($("invitePanel"));
   $("invitePanel").hidden = true;
+  closeAccountMenu(false);
   $("noticeBanner").hidden = true;
 }
 

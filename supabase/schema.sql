@@ -435,3 +435,251 @@ from (values
   ('income',  'Gifts',                  'Gifts received')
 ) as m(type, old_name, new_name)
 where t.type = m.type and t.category = m.old_name;
+
+-- MIGRATION 2026-09-27b: recurring rules and debts ---------------------------------
+-- Existing projects: run just this block in the SQL editor. Safe to re-run.
+-- Adds two tables and two nullable columns on transactions; changes no existing row.
+
+create table if not exists recurring_rules (
+  id uuid primary key default gen_random_uuid(),
+  household_id uuid references households(id) on delete cascade not null,
+  type text not null check (type in ('income', 'expense')),
+  amount numeric not null check (amount > 0),
+  category text not null,
+  note text not null default '',
+  day_of_month int not null check (day_of_month between 1 and 28),
+  active boolean not null default true,
+  created_by uuid references auth.users(id) not null,
+  created_at timestamptz not null default now(),
+  -- First day of the last month this rule was handled (an entry created, or deliberately
+  -- skipped). Stops a deleted auto-entry from being re-created on the next app load.
+  last_materialized_month date
+);
+
+create table if not exists debts (
+  id uuid primary key default gen_random_uuid(),
+  household_id uuid references households(id) on delete cascade not null,
+  name text not null check (char_length(btrim(name)) between 1 and 80),
+  debt_type text not null check (debt_type in ('credit_card', 'loan', 'mortgage', 'other')),
+  original_balance numeric not null check (original_balance > 0),
+  current_balance numeric not null check (current_balance >= 0),
+  interest_rate numeric check (interest_rate is null or interest_rate between 0 and 100),
+  minimum_payment numeric check (minimum_payment is null or minimum_payment > 0),
+  created_by uuid references auth.users(id) not null,
+  created_at timestamptz not null default now()
+);
+
+-- Links from a transaction to the rule or debt that produced it. Normal entries leave both null.
+alter table transactions add column if not exists recurring_rule_id uuid references recurring_rules(id) on delete set null;
+alter table transactions add column if not exists debt_id uuid references debts(id) on delete set null;
+
+-- At most one auto-entry per rule per date, even if both partners open the app at once.
+-- (NULLs never conflict, so ordinary transactions are unaffected.)
+do $$ begin
+  alter table transactions add constraint transactions_recurring_once unique (recurring_rule_id, date);
+exception when duplicate_object or duplicate_table then null;
+end $$;
+
+-- The app may not set recurring_rule_id / debt_id itself: only materialize_recurring() and
+-- log_debt_payment() do. Otherwise any user could plant an entry pointing at another
+-- household's rule and block that household's auto-entry via the constraint above.
+revoke insert on transactions from anon, authenticated;
+grant insert (id, household_id, type, amount, date, category, note, author_id, author_email, created_at)
+  on transactions to authenticated;
+
+alter table recurring_rules enable row level security;
+alter table debts enable row level security;
+
+-- Same pattern as transactions: members read and add; only the creator changes or removes.
+drop policy if exists "members read household recurring rules" on recurring_rules;
+create policy "members read household recurring rules"
+  on recurring_rules for select using (household_id in (select my_household_ids()));
+drop policy if exists "members add recurring rules" on recurring_rules;
+create policy "members add recurring rules"
+  on recurring_rules for insert
+  with check (created_by = auth.uid() and household_id in (select my_household_ids()));
+drop policy if exists "creators update their recurring rules" on recurring_rules;
+create policy "creators update their recurring rules"
+  on recurring_rules for update
+  using (created_by = auth.uid() and household_id in (select my_household_ids()))
+  with check (created_by = auth.uid() and household_id in (select my_household_ids()));
+drop policy if exists "creators delete their recurring rules" on recurring_rules;
+create policy "creators delete their recurring rules"
+  on recurring_rules for delete using (created_by = auth.uid());
+
+drop policy if exists "members read household debts" on debts;
+create policy "members read household debts"
+  on debts for select using (household_id in (select my_household_ids()));
+drop policy if exists "members add debts" on debts;
+create policy "members add debts"
+  on debts for insert
+  with check (created_by = auth.uid() and household_id in (select my_household_ids()));
+drop policy if exists "creators update their debts" on debts;
+create policy "creators update their debts"
+  on debts for update
+  using (created_by = auth.uid() and household_id in (select my_household_ids()))
+  with check (created_by = auth.uid() and household_id in (select my_household_ids()));
+drop policy if exists "creators delete their debts" on debts;
+create policy "creators delete their debts"
+  on debts for delete using (created_by = auth.uid());
+
+-- Creates this month's entry for every active rule whose day has arrived and that hasn't been
+-- handled this month. Runs in one transaction with row locks, so concurrent calls from two
+-- devices can't double-insert. Returns how many entries it created.
+-- `today` is the caller's local date (month boundaries are the household's, not UTC's);
+-- anything more than a day away from the server's date is ignored.
+create or replace function materialize_recurring(hid uuid, today date default current_date)
+returns integer
+language plpgsql
+volatile
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  month_start date;
+  created integer := 0;
+  rows_in integer;
+  r recurring_rules%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'not_authenticated';
+  end if;
+  if not exists (select 1 from household_members where household_id = hid and user_id = auth.uid()) then
+    raise exception 'not_a_member';
+  end if;
+  if today is null or abs(today - current_date) > 1 then
+    today := current_date;
+  end if;
+  month_start := date_trunc('month', today)::date;
+
+  for r in
+    select * from recurring_rules
+    where household_id = hid
+      and active
+      and day_of_month <= extract(day from today)
+      and (last_materialized_month is null or last_materialized_month < month_start)
+    for update
+  loop
+    insert into transactions (household_id, type, amount, date, category, note, author_id, author_email, recurring_rule_id)
+    select r.household_id, r.type, r.amount, month_start + (r.day_of_month - 1), r.category, r.note,
+           r.created_by, u.email, r.id
+    from auth.users u where u.id = r.created_by
+    on conflict (recurring_rule_id, date) do nothing;
+    get diagnostics rows_in = row_count;
+    created := created + rows_in;
+    update recurring_rules set last_materialized_month = month_start where id = r.id;
+  end loop;
+  return created;
+end;
+$$;
+revoke execute on function materialize_recurring(uuid, date) from public, anon;
+grant execute on function materialize_recurring(uuid, date) to authenticated;
+
+-- One action, two consistent effects: lowers the debt's balance AND records the matching
+-- expense, atomically. Any household member may log a payment on any household debt.
+create or replace function log_debt_payment(target_debt uuid, pay_amount numeric, paid_on date default current_date)
+returns numeric
+language plpgsql
+volatile
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  d debts%rowtype;
+  uid uuid := auth.uid();
+  new_balance numeric;
+begin
+  if uid is null then
+    raise exception 'not_authenticated';
+  end if;
+  if pay_amount is null or pay_amount <= 0 then
+    raise exception 'invalid_amount';
+  end if;
+  select * into d from debts where id = target_debt for update;
+  if not found or not exists (select 1 from household_members where household_id = d.household_id and user_id = uid) then
+    raise exception 'debt_not_found';
+  end if;
+  if pay_amount > d.current_balance then
+    raise exception 'more_than_balance';
+  end if;
+  if paid_on is null or paid_on > current_date + 1 then
+    paid_on := current_date;
+  end if;
+
+  update debts set current_balance = current_balance - pay_amount where id = d.id
+  returning current_balance into new_balance;
+
+  insert into transactions (household_id, type, amount, date, category, note, author_id, author_email, debt_id)
+  select d.household_id, 'expense', pay_amount, paid_on, 'Loan & card payments', left('Payment: ' || d.name, 200), uid, u.email, d.id
+  from auth.users u where u.id = uid;
+
+  return new_balance;
+end;
+$$;
+revoke execute on function log_debt_payment(uuid, numeric, date) from public, anon;
+grant execute on function log_debt_payment(uuid, numeric, date) to authenticated;
+
+-- Deleting a payment's expense entry puts the amount back on the debt, so the two never drift.
+create or replace function restore_debt_on_payment_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if old.debt_id is not null and old.type = 'expense' then
+    update debts set current_balance = current_balance + old.amount where id = old.debt_id;
+  end if;
+  return old;
+end;
+$$;
+revoke execute on function restore_debt_on_payment_delete() from public, anon, authenticated;
+
+drop trigger if exists restore_debt_on_payment_delete on transactions;
+create trigger restore_debt_on_payment_delete
+  after delete on transactions
+  for each row execute function restore_debt_on_payment_delete();
+
+-- MIGRATION 2026-09-28: Members page roster ------------------------------------------
+-- Existing projects: run just this block in the SQL editor. Safe to re-run. Adds one
+-- read-only function; changes no table or row.
+-- Emails live in auth.users, which the app can't read. This returns name, email and join date
+-- for the members of ONE household, and only to someone who belongs to it.
+create or replace function household_roster(hid uuid)
+returns table (user_id uuid, display_name text, email text, role text, joined_at timestamptz)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select m.user_id, p.display_name, u.email::text, m.role, m.joined_at
+  from household_members m
+  join auth.users u on u.id = m.user_id
+  left join profiles p on p.id = m.user_id
+  where m.household_id = hid
+    and exists (select 1 from household_members me where me.household_id = hid and me.user_id = auth.uid())
+  order by m.joined_at;
+$$;
+revoke execute on function household_roster(uuid) from public, anon;
+grant execute on function household_roster(uuid) to authenticated;
+
+-- MIGRATION 2026-09-28b: category usage counts (for the add-transaction chips) -----------
+-- Existing projects: run just this block in the SQL editor. Safe to re-run. Adds one
+-- read-only function; changes no table or row.
+-- How often each category has been used, per type, across the household's whole history
+-- (the app itself only loads the newest 1,000 entries). SECURITY INVOKER: it runs as the
+-- caller, so the transactions read policy decides what's counted: only your own household.
+create or replace function category_usage(hid uuid)
+returns table (type text, category text, uses bigint)
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+  select t.type, t.category, count(*) as uses
+  from transactions t
+  where t.household_id = hid
+  group by t.type, t.category;
+$$;
+revoke execute on function category_usage(uuid) from public, anon;
+grant execute on function category_usage(uuid) to authenticated;
