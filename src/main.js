@@ -65,7 +65,7 @@ const state = {
   household: null,
   names: {},              // user id -> display name, from profiles
   categoryUsage: null,    // [{ type, category, uses }] from category_usage(); null = not loaded
-  journeyShowTotal: false, // Debts: "Start" under the journey bar shows the total starting debt
+  journeyShowTotal: false, // Debts: "Start" under the journey bar shows the total still owed
   members: [],            // Members page: [{ user_id, display_name, email, role, joined_at }]
   inviteLink: null,
   tx: [],
@@ -1918,14 +1918,14 @@ function renderJourney() {
     </div>
     <div class="journey-labels">
       <button type="button" class="journey-start" aria-pressed="${Boolean(state.journeyShowTotal)}"
-        title="Show the total you started with">${state.journeyShowTotal ? `${fmtMoney(original)} total` : "Start"}</button>
+        title="Show how much is still owed">${state.journeyShowTotal ? `${fmtMoney(current)} left` : "Start"}</button>
       <span class="journey-pct" aria-hidden="true">${shown}%</span>
       <span class="end${current <= 0 ? " reached" : ""}" aria-hidden="true">$0</span>
     </div>`;
   el.querySelector(".journey-start").addEventListener("click", () => {
     state.journeyShowTotal = !state.journeyShowTotal;
     const start = el.querySelector(".journey-start");
-    start.textContent = state.journeyShowTotal ? `${fmtMoney(original)} total` : "Start";
+    start.textContent = state.journeyShowTotal ? `${fmtMoney(current)} left` : "Start";
     start.setAttribute("aria-pressed", String(state.journeyShowTotal));
     placeJourneyPct(el, pct, false); // the wider label may push the percentage along
   });

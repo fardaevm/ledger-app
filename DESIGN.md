@@ -247,7 +247,8 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
       `placeJourneyPct()`, re-run on resize and when "Start" changes width, and it slides with
       the fill. (Green at 13px is ~3.8:1, the same as income amounts in the ledger.)
     - **"Start" is a toggle** (a real `<button>`, `aria-pressed`): tapping shows the total
-      starting debt across all debts ("$29,200.00 total"), tapping again goes back to "Start".
+      amount **still owed** across all active debts, the sum of current balances ("$20,200.00
+      left"), tapping again goes back to "Start".
       See "Tappable labels" under Components.
   Screen readers still get the full picture from the bar's `aria-valuetext` ("30.8% paid off,
   $20,200.00 to go of $29,200.00"). Total debt isn't shown on the Dashboard; the journey
@@ -341,7 +342,7 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
 ### Tappable labels
 
 > A piece of text that's also a control (e.g. "Start" under the debt journey, which toggles
-> to "$29,200.00 total") must look interactive by more than colour: **`--brass` text AND an
+> to "$20,200.00 left") must look interactive by more than colour: **`--brass` text AND an
 > underline** (1px, offset 3px; 2px on hover), like a link.
 
 - It's a real `<button>` (with `aria-pressed` when it toggles), not a clickable `<span>`.
