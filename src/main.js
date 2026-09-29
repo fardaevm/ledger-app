@@ -66,6 +66,7 @@ const state = {
   names: {},              // user id -> display name, from profiles
   categoryUsage: null,    // [{ type, category, uses }] from category_usage(); null = not loaded
   journeyShowTotal: false, // Debts: "Start" under the journey bar shows the total still owed
+  debtView: null,         // Debts: "paid" (default) or "remaining"; null = not read from storage yet
   members: [],            // Members page: [{ user_id, display_name, email, role, joined_at }]
   inviteLink: null,
   tx: [],
@@ -1904,8 +1905,17 @@ function renderJourney() {
   state.journeyPct = pct;
   // One statement per fact: the amount (headline), the bar, and the percentage in the caption
   // row under the end of the fill. "Start" doubles as a toggle for the total starting debt.
+  // The headline leads with progress by default; "Remaining" is an explicit choice, in neutral
+  // text (never red). The bar, dots and percentage show progress either way.
+  const remaining = debtView() === "remaining";
   el.innerHTML = `
-    <p class="journey-paid"><span class="journey-amt">${fmtMoney(paid)}</span> paid off</p>
+    <div class="journey-top">
+      <p class="journey-paid${remaining ? " remaining" : ""}"><span class="journey-amt">${fmtMoney(remaining ? current : paid)}</span> ${remaining ? "remaining" : "paid off"}</p>
+      <div class="view-toggle" role="group" aria-label="Show debts as">
+        <button type="button" data-debt-view="paid" aria-pressed="${!remaining}">Paid off</button>
+        <button type="button" data-debt-view="remaining" aria-pressed="${remaining}">Remaining</button>
+      </div>
+    </div>
     <div class="journey-path" style="--p: ${from}">
       <div class="journey-track" role="progressbar" aria-label="Debt-free journey" aria-valuemin="0" aria-valuemax="100"
         aria-valuenow="${shown}" aria-valuetext="${shown}% paid off, ${fmtMoney(current)} to go of ${fmtMoney(original)}">
@@ -1935,6 +1945,30 @@ function renderJourney() {
     placeJourneyPct(el, pct, true);
   });
 }
+
+// "Paid off" (the default) or "Remaining": which figure the Debts view leads with. One choice
+// drives the journey headline and every card; remembered per user on this device.
+const debtViewKey = () => `ledger.debtView.${state.session?.user?.id}`;
+function debtView() {
+  if (!state.debtView) {
+    let saved = null;
+    try {
+      saved = localStorage.getItem(debtViewKey());
+    } catch {} // storage can be unavailable (private mode); the default still works
+    state.debtView = saved === "remaining" ? "remaining" : "paid";
+  }
+  return state.debtView;
+}
+$("debtJourney").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-debt-view]");
+  if (!btn || btn.dataset.debtView === debtView()) return;
+  state.debtView = btn.dataset.debtView;
+  try {
+    localStorage.setItem(debtViewKey(), state.debtView);
+  } catch {}
+  renderDebts();
+  $("debtJourney").querySelector(`[data-debt-view="${state.debtView}"]`)?.focus(); // re-rendered
+});
 
 // The percentage is placed in pixels, so re-place it whenever the card's width changes
 // (including the view going from hidden, width 0, to shown).
@@ -2078,7 +2112,9 @@ function renderDebts() {
       return `<article class="card debt-card" data-debt="${id}">
         <div class="debt-head">
           <p class="debt-name"><b>${name}</b></p>
-          <p class="debt-paidoff"><b>${fmtMoney(paidOff)}</b> paid off</p>
+          ${debtView() === "remaining"
+            ? `<p class="debt-paidoff"><b>${fmtMoney(current)}</b> remaining</p>`
+            : `<p class="debt-paidoff"><b>${fmtMoney(paidOff)}</b> paid off</p>`}
         </div>
         <div class="debt-progress" role="progressbar" aria-label="${name} paid off" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-valuetext="${pct}% paid off, ${fmtMoney(current)} left">
           <span style="width: ${pct}%"></span>
@@ -2418,6 +2454,7 @@ function resetSignedInState() {
   });
   state.members = [];
   state.journeyPct = undefined;
+  state.debtView = null; // the next person reads their own saved choice
   state.categoryUsage = null;
   document.querySelectorAll("dialog.sheet[open]").forEach((sheet) => sheet.close());
   showAppView("dashboard");

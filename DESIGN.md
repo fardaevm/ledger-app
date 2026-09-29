@@ -223,16 +223,34 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
 
 ### Debts view
 
-- **Lead with progress, not what's owed.** Every total is framed as "$X paid off". What's left
-  is carried by the bar and spelled out only under "More info".
+- **Lead with progress, not what's owed, by default.** Every figure starts framed as "$X paid
+  off". Seeing what's left is an **explicit choice**, never the default: the **Paid off /
+  Remaining toggle** (`.view-toggle`) on the journey card.
+  - **One global choice** (`state.debtView`, `"paid"` or `"remaining"`) switches the journey
+    headline and every card's figure together, so the page never mixes the two framings. There's
+    one control, on the journey card, not one per card (state each fact once).
+  - **"Remaining"** shows "$Y remaining": the sum of current balances on the journey, each
+    debt's balance on its card. It's in **neutral** `--text`, never red (owing money is a
+    baseline, not a problem).
+  - **The bar, dots, flag and percentage always show progress toward debt-free.** Only the big
+    figure and its word change.
+  - **Remembered per user on this device** (`localStorage`, key `ledger.debtView.<user id>`, all
+    access in try/catch). A first-ever visit (or unavailable storage) gets "Paid off". Each
+    person on a shared device keeps their own. It doesn't follow you to another device; that
+    would need a column on `profiles`.
+  - Styled like the app's other segmented toggles (equal halves via `grid-auto-columns: 1fr`,
+    1px divider from the container, ink fill + `aria-pressed` when selected), but compact
+    (28px, 12px text), so it doesn't compete with the figure. Beside the figure on desktop; on
+    phones, on its own row above it, right-aligned.
 - **Debt-free journey** (`#debtJourney`, top of the view, the page's headline): all debts
   combined as one path from Start to $0. The math is the honest aggregate, `sum(original) −
   sum(current)` over `sum(original)`, **never an average of per-debt percentages** (that would
   understate progress on the biggest debt). The percentage is **exact to one decimal and
   rounded down** ("30.8%"; 49.96% shows 49.9%, never an early 50.0%; 100% is "100%"), so a
   milestone never shows before it's truly reached. Exactly three things:
-  - **"$X paid off"** in large `--green`, alone on its row. No eyebrow label (the page is
-    already titled "Debts"), no "to go of" subtitle, no "of the way to debt-free" caption.
+  - **"$X paid off"** in large `--green` (or, by choice, "$Y remaining" in `--text`), with the
+    Paid off / Remaining toggle. No eyebrow label (the page is already titled "Debts"), no "to
+    go of" subtitle, no "of the way to debt-free" caption.
   - A 10px track with a green fill (it animates from the last value via the registered
     property `--p`), milestone **dots** at 25 / 50 / 75% (filled green once reached, with the
     percentage only as a hover tooltip), and a **green flag at $0**: outlined in `--green`
@@ -254,7 +272,7 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
   $20,200.00 to go of $29,200.00"). Total debt isn't shown on the Dashboard; the journey
   lives only here.
 - **Compact card, about 106px at 375px.** Row 1: the **name only** (the type is secondary
-  detail: it heads "More info"), and **"$X paid off"** on the right. Row 2: a 6px **green progress bar** (`role="progressbar"`). Then the
+  detail: it heads "More info"), and **"$X paid off"** (or "$Y remaining", following the toggle) on the right. Row 2: a 6px **green progress bar** (`role="progressbar"`). Then the
   attention flag when it applies ("● No payment in 60 days": the red dot already says "needs
   attention", which is visually hidden text for screen readers only), then actions. **No
   "$Y left · N% paid off" line**: that restated the top of the same card.
