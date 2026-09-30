@@ -136,7 +136,8 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
   realtime updates simply arrive, and a failed load shows the error banner.
 - **Account icon + dropdown: the one home for identity and account actions.** Never add
   header links (no "Sign out" or "Invite" text links). A 40px round person icon sits at the end
-  of the header row on desktop and beside the household name on mobile (negative block margins
+  of the header row on desktop and beside the household name on mobile, paired with the
+  Assistant icon just before it (negative block margins
   keep the tap target without making the title row taller). It opens a dropdown anchored below
   it, right-aligned, 272px wide, in this order:
   1. Identity (not interactive): display name (`profiles`) and email (the session's).
@@ -150,6 +151,49 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
   non-interactive block and a form. Opening it focuses the first item. Escape closes it and
   returns focus to the icon, and a click or focus outside closes it. Items are 40px tall, 44px
   on mobile. New account-level actions go into this dropdown, in the matching group.
+- **Assistant: the header's second icon, an overlay, never a nav destination.** A 40px round
+  chat-bubble icon (`#chatBtn`, the same `.account-btn` treatment) sits just before the account
+  icon; the two form one `.header-actions` pair, 8px apart. It opens `#chatPanel`, a
+  `role="dialog"` over **whatever view is showing**. The view underneath keeps its place
+  (scroll, filter, search), and the Assistant is never added to the sidebar or tab bar.
+  - **≥ 1200px:** a 400px slide-over on the right edge, and the page moves over
+    (`body.chat-open .shell { padding-right: 400px }`) to sit **beside** it, still usable,
+    with the header icons still reachable. Not modal.
+  - **721–1199px:** the same panel **over** the page, with a light scrim; tapping the scrim
+    closes it.
+  - **≤ 720px:** **full screen** (a conversation needs the height), above the tab bar,
+    lifted above the on-screen keyboard (`--kb`). Modal: the page behind is `inert` and
+    `aria-modal="true"`. Focus lands on the title, not the text box, so the keyboard doesn't
+    jump up on open.
+  - The chat icon toggles it; × (40px, top right) and Escape close it too. Focus returns to
+    the icon. It switches layout live if the window is resized while open.
+  - **Inside:** a header ("Assistant", a "New chat" text button once there's a
+    conversation, ×), a scrolling `role="log"`, and a composer fixed at the bottom (textarea
+    that grows to 132px, 16px text on phones; round `--brass` send button, disabled while
+    empty or waiting). Enter sends; Shift+Enter is a new line. Empty state: one line of intro
+    plus three suggested questions as chips.
+  - **Bubbles:** yours right-aligned in the ink fill (like selected toggles); the assistant's
+    left-aligned on `--paper-2` with a 1px `--line` border (without it, the bubble vanishes in
+    dark mode, where `--paper-2` equals the panel's `--raised`). A three-dot typing bubble
+    shows while waiting (static for reduced motion).
+  - **Replies render a small markdown subset:** paragraphs, `-`/`*` and numbered lists,
+    `**bold**`, `*italic*`, `` `code` ``, `#` headings as bold lines. Everything is escaped
+    first, so a reply can never inject HTML. Plain text stays plain paragraphs.
+  - **Errors each get their own message**, in the app's error style (dark text, red rule),
+    at the end of the log:
+    - 401: one silent session refresh and retry first, then "Your session has expired…" +
+      **Sign in again** (signs out: the app's normal route to the sign-in screen).
+    - 403: "isn't enabled for this account", or "needs a household".
+    - 503 "not enabled": "isn't switched on for this app yet".
+    - 422: "too long".
+    - Network failure or other 5xx: a message + **Try again**, which resends the same question.
+    Failed questions are never sent back as history.
+  - **Conversation lifetime:** in memory for the page visit. Closing and reopening keeps it;
+    reload, "New chat" and sign-out clear it (from the DOM too), and a reply still in flight
+    after a reset is dropped. Nothing is stored.
+  - Requests go to `/api/chat` on the same origin with `{access_token, message, history}`
+    (finance-agent's `ChatRequest`). History is completed turns only, starting with a user
+    message, capped at 40 messages / 8,000 characters each, like the API.
 - **Members page** (`#viewMembers`): a full view reached **only** from the dropdown, not the
   nav (so no tab is highlighted). A "‹ Back" button returns to the view you came from. Opening
   it pushes a history entry, so the browser's or phone's Back works too; the URL doesn't

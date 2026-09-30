@@ -20,7 +20,9 @@ import anthropic
 
 from . import tools
 
-MODEL = "claude-sonnet-4-6"
+# The cheapest tier is enough here: every number comes from a tool, so the model only picks
+# tools and phrases the answer.
+MODEL = "claude-haiku-4-5-20251001"
 MAX_TOOL_ITERATIONS = 6
 
 
@@ -45,6 +47,9 @@ it's clear what period a claim covers.
 candidates to review, not certainties.
 - Keep responses concise and skimmable: short paragraphs or a tight \
 bullet list, not a financial essay.
+- Replies appear in a narrow chat panel, as narrow as a phone screen. Use \
+only short paragraphs, bullet or numbered lists and **bold**: no tables, no \
+headings. For several debts or categories, one bullet each.
 
 Talking about debt (the same tone rules as the app's Debts page):
 - Lead with progress made: how much has been paid off and the percent \
@@ -57,7 +62,10 @@ use alarming language about it ("drowning", "crushing", "dangerous", \
 "behind", "worrying") and don't moralise.
 - Only raise concern for a real problem the tools show, and say it calmly \
 with the number: minimum_covers_interest is false (paying only the minimum \
-never brings the balance down), or a balance that has grown.
+never brings the balance down), or a balance that has grown. Nothing else \
+is a problem: a high interest rate or a large balance is a fact for \
+deciding what to pay first, so don't call it a "concern", a "problem" or a \
+"worry", or say it's costing "meaningful" interest. Give the number instead.
 - Payoff dates: say which basis you're quoting. rough_estimate is the \
 Debts page's own figure (minimum payments, interest ignored); with_interest \
 is the more realistic month-by-month projection. Don't present either as \

@@ -216,7 +216,9 @@ header.top .tagline { font-size: 13px; color: var(--text-dim); margin-top: 4px; 
 /* Account menu: a person icon in the header opening a dropdown (a disclosure, not role=menu,
    since it holds a non-interactive identity block and an inline form). All identity and
    account actions live here, never as header links. */
-.account { position: relative; flex: none; order: 3; }
+/* Header icons: the assistant and the account menu, a matched pair (same .account-btn). */
+.header-actions { display: flex; align-items: center; gap: 8px; flex: none; order: 3; }
+.account { position: relative; flex: none; }
 .account-btn {
   display: grid; place-items: center; width: 40px; height: 40px; padding: 0;
   border: 1px solid var(--line); border-radius: 50%; background: var(--raised); color: var(--text); cursor: pointer;
@@ -883,6 +885,114 @@ dialog.sheet::backdrop { background: rgb(15 23 42 / 0.45); animation: sheet-fade
   dialog.sheet[open], dialog.sheet::backdrop { animation: none; }
 }
 
+/* Assistant panel (#chatPanel). Desktop: a 400px slide-over on the right edge; from 1200px
+   the page moves over to sit beside it (still usable, header icons still reachable), below
+   that it overlays the page with a light scrim. Phones: full screen. */
+.chat-scrim { position: fixed; inset: 0; z-index: 44; background: rgb(15 23 42 / 0.28); }
+.chat-scrim[hidden] { display: none; }
+.chat-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 45; width: 400px; max-width: 100%;
+  display: flex; flex-direction: column; background: var(--raised); color: var(--text);
+  border-left: 1px solid var(--line); box-shadow: -16px 0 40px -24px rgb(15 23 42 / 0.4);
+  animation: chat-in 0.2s ease-out;
+}
+.chat-panel[hidden] { display: none; }
+@keyframes chat-in { from { transform: translateX(24px); opacity: 0; } }
+@media (min-width: 1200px) {
+  body.chat-open .shell { padding-right: 400px; }
+}
+.chat-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 14px 12px 14px 20px; border-bottom: 1px solid var(--line);
+}
+.chat-title { flex: 1 1 auto; margin: 0; font-size: 17px; font-weight: 800; color: var(--text); }
+.chat-title:focus { outline: none; } /* focused on open on phones, for screen readers */
+.chat-new {
+  height: 32px; padding: 0 10px; border: none; border-radius: 6px; background: none; cursor: pointer;
+  color: var(--text-dim); font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; font-weight: 600;
+}
+.chat-new:hover { background: var(--paper-2); color: var(--text); }
+.chat-new[hidden] { display: none; }
+.chat-close {
+  display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--raised); color: var(--text); cursor: pointer;
+}
+.chat-close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.chat-close:hover { border-color: var(--brass); }
+.chat-new:focus-visible, .chat-close:focus-visible, .chat-send:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.chat-log {
+  flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px; padding: 18px 16px;
+}
+/* Bubbles: yours right-aligned in the ink fill (like selected toggles), the assistant's
+   left-aligned on the recessed surface. */
+.chat-msg {
+  max-width: 88%; padding: 10px 13px; border-radius: 14px;
+  font-size: 14px; line-height: 1.5; overflow-wrap: anywhere;
+}
+.chat-msg.user { align-self: flex-end; background: var(--ink); color: var(--paper); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+/* The border keeps it a bubble in dark mode, where --paper-2 equals the panel's --raised. */
+.chat-msg.assistant { align-self: flex-start; background: var(--paper-2); color: var(--text); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.chat-msg p { margin: 0; }
+.chat-msg p + p, .chat-msg p + ul, .chat-msg p + ol, .chat-msg ul + p, .chat-msg ol + p { margin-top: 8px; }
+.chat-msg ul, .chat-msg ol { margin: 0; padding-left: 18px; }
+.chat-msg li + li { margin-top: 3px; }
+.chat-msg strong { font-weight: 700; }
+.chat-msg code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.chat-msg > * + .chat-table, .chat-msg .chat-table + * { margin-top: 8px; }
+.chat-table { overflow-x: auto; }
+.chat-table table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.chat-table th, .chat-table td { padding: 4px 10px 4px 0; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.chat-table th { font-weight: 600; color: var(--text-dim); }
+.chat-table tr:last-child td { border-bottom: 0; }
+/* Typing indicator: three dots that pulse (static for reduced motion). */
+.chat-typing { display: inline-flex; gap: 4px; padding: 14px 14px; }
+.chat-typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); animation: chat-dot 1.2s infinite ease-in-out; }
+.chat-typing span:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-dot { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+/* Problems follow the app's error style: dark text with a red rule, never red text. */
+.chat-problem {
+  display: grid; gap: 8px; justify-items: start; align-self: stretch;
+  padding: 2px 0 2px 12px; border-left: 3px solid var(--rust);
+}
+.chat-problem p { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--text); }
+.chat-empty { margin: auto 0; display: grid; gap: 14px; }
+.chat-empty p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
+.chat-suggestions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-suggestions .cat-chip { height: auto; min-height: 32px; padding: 7px 12px; text-align: left; line-height: 1.3; }
+.chat-compose {
+  display: flex; align-items: flex-end; gap: 8px; flex: none;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
+}
+.chat-compose textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 40px; max-height: 132px; resize: none; overflow-y: hidden; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--text);
+  font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; line-height: 1.45;
+}
+.chat-compose textarea:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+.chat-send {
+  display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0;
+  border: none; border-radius: 50%; background: var(--brass); color: #fff; cursor: pointer;
+}
+.chat-send svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chat-send:disabled { opacity: 0.4; cursor: default; }
+@media (max-width: 720px) {
+  /* Full screen: a conversation needs the height. Sits above the tab bar and lifts above the
+     on-screen keyboard (--kb, from visualViewport). */
+  .chat-panel {
+    z-index: 60; width: 100%; border-left: none; box-shadow: none;
+    bottom: var(--kb, 0px); padding-top: env(safe-area-inset-top, 0px); animation-name: chat-up;
+  }
+  @keyframes chat-up { from { transform: translateY(16px); opacity: 0; } }
+  .chat-head { padding: 10px 12px 10px 16px; }
+  .chat-compose textarea { font-size: 16px; } /* 16px: iOS doesn't zoom on focus */
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel { animation: none; }
+  .chat-typing span { animation: none; opacity: 0.6; }
+}
+
 /* Payment celebration: a toast that fades out on its own (~1.5 s) plus confetti. Neither
    blocks the page (pointer-events: none) or needs dismissing. */
 .celebrate {
@@ -975,7 +1085,7 @@ dialog.sheet::backdrop { background: rgb(15 23 42 / 0.45); animation: sheet-fade
 
   /* Account icon sits beside the household name; the dropdowns take the row below. Negative
      block margins keep the 40px tap target without making the title row taller. */
-  .account { order: 2; align-self: center; margin-block: -8px; }
+  .header-actions { order: 2; align-self: center; margin-block: -8px; }
   .period-nav { order: 3; }
   .account-item { min-height: 44px; }
   .account-item.account-signout { min-height: 40px; }

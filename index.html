@@ -163,6 +163,11 @@
           <h1 id="hhTitle">Ledger</h1>
           <div class="tagline">Shared family income &amp; expenses</div>
         </div>
+        <!-- Header icons: the assistant (opens #chatPanel over any view) and the account menu. -->
+        <div class="header-actions">
+          <button type="button" class="account-btn chat-btn" id="chatBtn" aria-expanded="false" aria-controls="chatPanel" aria-label="Assistant" title="Assistant">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4.5 3.5V17H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+          </button>
         <!-- Account menu: identity, members, invite, profile and sign-out live here, not in header links. -->
         <div class="account" id="account">
           <button type="button" class="account-btn" id="accountBtn" aria-expanded="false" aria-controls="accountMenu" aria-label="Account">
@@ -191,6 +196,7 @@
             <hr>
             <button type="button" class="account-item account-signout" id="signOutBtn">Sign out</button>
           </div>
+        </div>
         </div>
         <div class="period-nav" id="periodNav">
           <span class="select-wrap">
@@ -591,6 +597,28 @@
       <!-- Holds the add-transaction form while a view without an entry slot is showing. -->
       <div id="entryParking" hidden></div>
     </div>
+    </div>
+
+    <!-- Assistant: opened from the header's chat icon over any view (not a nav destination).
+         A slide-over on desktop, full screen on phones. Outside .shell so the page behind can be
+         made inert on phones without affecting the panel. -->
+    <div class="chat-scrim" id="chatScrim" hidden></div>
+    <div class="chat-panel" id="chatPanel" role="dialog" aria-modal="false" aria-labelledby="chatTitle" hidden>
+      <div class="chat-head">
+        <h2 class="chat-title" id="chatTitle" tabindex="-1">Assistant</h2>
+        <button type="button" class="chat-new" id="chatNew" hidden>New chat</button>
+        <button type="button" class="chat-close" id="chatClose" aria-label="Close assistant">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="chat-log" id="chatLog" role="log" aria-live="polite" aria-label="Conversation"></div>
+      <form class="chat-compose" id="chatForm">
+        <label class="visually-hidden" for="chatInput">Message the assistant</label>
+        <textarea id="chatInput" rows="1" maxlength="4000" placeholder="Ask about your money…" autocomplete="off"></textarea>
+        <button type="submit" class="chat-send" id="chatSend" aria-label="Send" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/></svg>
+        </button>
+      </form>
     </div>
   </section>
 

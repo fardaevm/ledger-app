@@ -552,6 +552,315 @@ $("menuPassword").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Assistant: the header's chat icon opens a panel over whatever view is showing (not a nav
+// destination), backed by /api/chat on this same origin (finance-agent, a Vercel function).
+// Desktop: a slide-over on the right; beside the page on wide screens, over it (with a light
+// scrim) on narrower ones. Phones: full screen, with the page behind made inert.
+// The conversation lives in memory for this page visit: closing and reopening keeps it;
+// reload or sign-out starts fresh. Nothing is stored.
+// ---------------------------------------------------------------------------
+const CHAT_MAX_HISTORY = 40; // finance-agent's ChatRequest.history cap
+const CHAT_MAX_CONTENT = 8000; // its per-message cap for history entries
+const CHAT_SUGGESTIONS = ["How are we doing on our debts?", "Where did most of our money go this month?", "Are we on track for our profit goal?"];
+const chat = {
+  messages: [], // { role: "user" | "assistant", content, failed? }
+  pending: false,
+  problem: null, // { kind } shown at the end of the log
+  generation: 0 // bumped by resetChat, so a reply still in flight can't land in a new conversation
+};
+const phoneWidth = matchMedia("(max-width: 720px)");
+const besideWidth = matchMedia("(min-width: 1200px)");
+
+function chatOpen() {
+  return !$("chatPanel").hidden;
+}
+
+// Full screen on phones: nothing behind it should be reachable. On narrower desktops the panel
+// covers part of the page, so a light scrim dims it (a tap on it closes the panel).
+function syncChatLayout() {
+  const open = chatOpen();
+  document.body.classList.toggle("chat-open", open);
+  document.querySelector(".shell").inert = open && phoneWidth.matches;
+  $("chatPanel").setAttribute("aria-modal", String(open && phoneWidth.matches));
+  $("chatScrim").hidden = !(open && !phoneWidth.matches && !besideWidth.matches);
+}
+phoneWidth.addEventListener("change", syncChatLayout);
+besideWidth.addEventListener("change", syncChatLayout);
+
+function openChat() {
+  closeAccountMenu(false);
+  $("chatPanel").hidden = false;
+  $("chatBtn").setAttribute("aria-expanded", "true");
+  syncChatLayout();
+  renderChat();
+  // On phones, don't pop the keyboard before they've read anything; land on the title.
+  (phoneWidth.matches ? $("chatTitle") : $("chatInput")).focus({ preventScroll: true });
+}
+
+function closeChat() {
+  if (!chatOpen()) return;
+  $("chatPanel").hidden = true;
+  $("chatBtn").setAttribute("aria-expanded", "false");
+  syncChatLayout();
+  $("chatBtn").focus({ preventScroll: true });
+}
+
+$("chatBtn").addEventListener("click", () => (chatOpen() ? closeChat() : openChat()));
+$("chatClose").addEventListener("click", closeChat);
+$("chatScrim").addEventListener("click", closeChat);
+$("chatPanel").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeChat();
+  }
+});
+$("chatNew").addEventListener("click", () => {
+  if (chat.pending) return;
+  chat.generation++;
+  chat.messages = [];
+  chat.problem = null;
+  renderChat();
+  $("chatInput").focus();
+});
+
+// The model's replies usually use a little markdown (bullets, **bold**). Render that small
+// subset; everything is escaped first, so a reply can never inject HTML.
+function renderReplyHtml(text) {
+  const inline = (s) =>
+    s
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+  const out = [];
+  let list = null; // { tag, items }
+  let para = [];
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`);
+    list = null;
+  };
+  // The prompt asks for no tables (the panel is phone-narrow), but if one comes anyway it's
+  // shown as a table that scrolls sideways inside the bubble, not as raw pipes.
+  let table = null; // rows of cells; a "|---|" row after the first marks it as the header
+  const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  const flushTable = () => {
+    if (!table) return;
+    const [head, ...body] = table.hasHeader ? table.rows : [null, ...table.rows];
+    const tr = (row, tag) => `<tr>${row.map((c) => `<${tag}>${inline(c)}</${tag}>`).join("")}</tr>`;
+    out.push(`<div class="chat-table"><table>${head ? `<thead>${tr(head, "th")}</thead>` : ""}<tbody>${body.map((r) => tr(r, "td")).join("")}</tbody></table></div>`);
+    table = null;
+  };
+  for (const raw of escapeHtml(text).split("\n")) {
+    const line = raw.trimEnd();
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      flushPara();
+      flushList();
+      table ??= { rows: [], hasHeader: false };
+      if (/^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(line)) table.hasHeader = table.rows.length === 1;
+      else table.rows.push(cells(line));
+      continue;
+    }
+    flushTable();
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (bullet || numbered) {
+      const tag = bullet ? "ul" : "ol";
+      flushPara();
+      if (list && list.tag !== tag) flushList();
+      list ??= { tag, items: [] };
+      list.items.push((bullet || numbered)[1]);
+    } else if (!line.trim()) {
+      flushPara();
+      flushList();
+    } else if (heading) {
+      flushPara();
+      flushList();
+      out.push(`<p><strong>${inline(heading[1])}</strong></p>`);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+  flushTable();
+  return out.join("");
+}
+
+const CHAT_PROBLEMS = {
+  auth: { text: "Your session has expired. Sign in again to keep chatting.", action: "Sign in again" },
+  "not-allowed": { text: "The assistant isn't enabled for this account." },
+  "no-household": { text: "The assistant needs a household. Create or join one first." },
+  "not-configured": { text: "The assistant isn't switched on for this app yet." },
+  "too-long": { text: "That message is too long. Try a shorter question." },
+  network: { text: "Couldn't reach the assistant. Check your connection.", action: "Try again" },
+  server: { text: "The assistant ran into a problem.", action: "Try again" }
+};
+
+function renderChat() {
+  const log = $("chatLog");
+  $("chatNew").hidden = chat.messages.length === 0 || chat.pending;
+  if (!chat.messages.length && !chat.problem) {
+    log.innerHTML = `<div class="chat-empty">
+        <p>Ask about your household's money. Answers use your ledger's real numbers.</p>
+        <div class="chat-suggestions">${CHAT_SUGGESTIONS.map((q) => `<button type="button" class="cat-chip" data-suggest="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join("")}</div>
+      </div>`;
+    return;
+  }
+  const bubbles = chat.messages.map((m) =>
+    m.role === "user"
+      ? `<div class="chat-msg user"><span class="visually-hidden">You: </span>${escapeHtml(m.content)}</div>`
+      : `<div class="chat-msg assistant"><span class="visually-hidden">Assistant: </span>${renderReplyHtml(m.content)}</div>`
+  );
+  if (chat.pending) {
+    bubbles.push(`<div class="chat-msg assistant chat-typing" aria-label="The assistant is thinking"><span></span><span></span><span></span></div>`);
+  }
+  if (chat.problem) {
+    const p = CHAT_PROBLEMS[chat.problem.kind] || CHAT_PROBLEMS.server;
+    bubbles.push(`<div class="chat-problem" role="alert"><p>${p.text}</p>${p.action ? `<button type="button" class="btn-secondary btn-sm" data-chat-action="${chat.problem.kind === "auth" ? "signin" : "retry"}">${p.action}</button>` : ""}</div>`);
+  }
+  log.innerHTML = bubbles.join("");
+  log.scrollTop = log.scrollHeight;
+}
+
+$("chatLog").addEventListener("click", (e) => {
+  const suggestion = e.target.closest("[data-suggest]");
+  if (suggestion) return sendChat(suggestion.dataset.suggest);
+  const action = e.target.closest("[data-chat-action]")?.dataset.chatAction;
+  if (action === "retry") return retryChat();
+  if (action === "signin") supabase.auth.signOut(); // the app's normal route back to the sign-in screen
+});
+
+// POST /api/chat as the signed-in user (finance-agent's ChatRequest: access_token, message,
+// history). One silent refresh-and-retry on 401, since the token may just have expired.
+async function postChat(message, history, retried = false) {
+  const token = (await supabase.auth.getSession()).data.session?.access_token;
+  if (!token) return { kind: "auth" };
+  let res;
+  try {
+    res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: token, message, history })
+    });
+  } catch {
+    return { kind: "network" };
+  }
+  if (res.ok) {
+    try {
+      const data = await res.json();
+      return { kind: "ok", reply: String(data.reply ?? "") };
+    } catch {
+      return { kind: "server" };
+    }
+  }
+  if (res.status === 401 && !retried) {
+    const { error } = await supabase.auth.refreshSession();
+    if (!error) return postChat(message, history, true);
+  }
+  let detail = "";
+  try {
+    detail = String((await res.json()).detail ?? "");
+  } catch {}
+  if (res.status === 401) return { kind: "auth" };
+  if (res.status === 403) return { kind: /household/i.test(detail) ? "no-household" : "not-allowed" };
+  if (res.status === 503 && /isn't enabled/i.test(detail)) return { kind: "not-configured" };
+  if (res.status === 422) return { kind: "too-long" };
+  return { kind: "server" }; // 5xx, including a timed-out function
+}
+
+// The history the API gets: completed turns only (a failed question has no answer yet),
+// starting with a user message, capped at the API's limits.
+function chatHistory() {
+  const done = chat.messages.filter((m) => !m.failed).map(({ role, content }) => ({ role, content: content.slice(0, CHAT_MAX_CONTENT) }));
+  let history = done.slice(-CHAT_MAX_HISTORY);
+  while (history.length && history[0].role !== "user") history = history.slice(1);
+  return history;
+}
+
+async function sendChat(text) {
+  const message = text.trim();
+  if (!message || chat.pending) return;
+  const history = chatHistory();
+  chat.messages.push({ role: "user", content: message });
+  await runChat(message, history);
+}
+
+async function retryChat() {
+  const last = chat.messages[chat.messages.length - 1];
+  if (!last || last.role !== "user" || chat.pending) return;
+  last.failed = false;
+  await runChat(last.content, chatHistory().slice(0, -1));
+}
+
+async function runChat(message, history) {
+  const generation = chat.generation;
+  chat.pending = true;
+  chat.problem = null;
+  renderChat();
+  syncChatSend();
+  const result = await postChat(message, history);
+  if (generation !== chat.generation) return; // signed out (or reset) while waiting
+  chat.pending = false;
+  if (result.kind === "ok") {
+    chat.messages.push({ role: "assistant", content: result.reply || "(No reply.)" });
+  } else {
+    chat.messages[chat.messages.length - 1].failed = true;
+    chat.problem = { kind: result.kind };
+  }
+  renderChat();
+  syncChatSend();
+}
+
+function syncChatSend() {
+  $("chatSend").disabled = chat.pending || !$("chatInput").value.trim();
+}
+
+// Grows with the text up to 132px, then scrolls. scrollHeight excludes the borders, so add
+// them back (offsetHeight − clientHeight), or the box comes out short and shows a scrollbar.
+function sizeChatInput() {
+  const input = $("chatInput");
+  input.style.height = "auto";
+  const wanted = input.scrollHeight + (input.offsetHeight - input.clientHeight);
+  input.style.height = `${Math.min(wanted, 132)}px`;
+  input.style.overflowY = wanted > 132 ? "auto" : "hidden";
+}
+
+$("chatInput").addEventListener("input", () => {
+  sizeChatInput();
+  syncChatSend();
+});
+// Enter sends; Shift+Enter is a new line (and nothing fires mid-IME composition).
+$("chatInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    $("chatForm").requestSubmit();
+  }
+});
+$("chatForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = $("chatInput").value;
+  if (!text.trim() || chat.pending) return;
+  $("chatInput").value = "";
+  sizeChatInput();
+  sendChat(text);
+});
+
+function resetChat() {
+  chat.generation++;
+  chat.messages = [];
+  chat.problem = null;
+  chat.pending = false;
+  $("chatInput").value = "";
+  renderChat(); // clear the old conversation out of the DOM too, not just out of memory
+  closeChat();
+}
+
+// ---------------------------------------------------------------------------
 // Members page (from the account menu only). It pushes a history entry, so the browser's or
 // phone's Back button leaves it too; the URL itself doesn't change.
 // ---------------------------------------------------------------------------
@@ -2457,6 +2766,7 @@ function resetSignedInState() {
   state.debtView = null; // the next person reads their own saved choice
   state.categoryUsage = null;
   document.querySelectorAll("dialog.sheet[open]").forEach((sheet) => sheet.close());
+  resetChat(); // a new sign-in starts a fresh conversation
   showAppView("dashboard");
   $("inviteSlotTop").append($("invitePanel"));
   $("invitePanel").hidden = true;
