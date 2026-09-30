@@ -680,9 +680,9 @@ status screen (invite results, load errors) all use the centred `.auth-card` (ma
 - **Sign in / Create account** is a segmented `.auth-tabs` toggle (symmetry rule
   applies). An invite link opens straight on **Create account**, with an indigo-edged
   note saying you've been invited.
-- The sign-in form always shows the **"First time signing in with a password?"** note.
-  It's how people who joined before password sign-in find the reset flow, so don't hide
-  it behind a link.
+- The sign-in form has no note for people from the old email-link sign-in (removed
+  2026-09-30, once everyone had moved to passwords). "Forgot password?" covers anyone who
+  needs to set one.
 - Secondary actions (Forgot password?, Resend confirmation email, Back to sign in) are
   `.text-link` buttons: indigo, underlined, 13px/600.
 - **Error messages** (`.hint.error`) are `--text`, 600 weight, with a 3px `--rust` rule

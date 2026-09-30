@@ -189,7 +189,6 @@ function openForgot() {
   $("forgotEmail").focus();
 }
 $("showForgot").addEventListener("click", openForgot);
-$("setPasswordLink").addEventListener("click", openForgot);
 
 $("signInForm").addEventListener("submit", async (e) => {
   e.preventDefault();

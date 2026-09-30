@@ -132,7 +132,6 @@ body {
   margin: 18px 0 0; padding: 12px 14px; border-radius: 8px; background: var(--paper-2);
   font-size: 13px; line-height: 1.5; color: var(--text-dim); text-align: left;
 }
-.auth-note strong { color: var(--text); font-weight: 600; }
 .auth-note.invite { margin: 0 0 18px; border-left: 3px solid var(--brass); color: var(--text); }
 .auth-link-error { margin: 0 0 18px; text-align: left; }
 .text-link {
@@ -140,7 +139,6 @@ body {
   font: inherit; font-size: 13px; font-weight: 600; color: var(--brass); cursor: pointer;
   text-decoration: underline; text-underline-offset: 2px;
 }
-.text-link.inline { display: inline; margin: 0; font-size: inherit; }
 .text-link[hidden] { display: none; }
 .text-link:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 2px; }
 .status-message { margin: 0 0 22px; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
