@@ -1,0 +1,5 @@
+# Local development: the runtime dependencies (shared with the Vercel function) plus a
+# local server and the test runner.
+-r ../requirements.txt
+uvicorn[standard]==0.30.6
+pytest==8.3.3

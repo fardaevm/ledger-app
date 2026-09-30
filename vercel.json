@@ -1,5 +1,12 @@
 {
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "finance-agent/app/**",
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

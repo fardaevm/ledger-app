@@ -121,6 +121,14 @@ Once deployed, open the URL in Safari (iOS) or Chrome (Android) and use
 "Add to Home Screen" — it installs as a standalone app icon thanks to the
 PWA manifest already wired up in `vite.config.js`.
 
+## Finance assistant (`finance-agent/`, `api/`)
+
+An AI assistant that answers questions about the household's finances lives in
+`finance-agent/` and deploys with the app as a Vercel Python function at `/api/chat` (same
+origin, no CORS). To enable it on Vercel, add `ANTHROPIC_API_KEY` and
+`ASSISTANT_ALLOWED_EMAILS` under Settings → Environment Variables; the Supabase settings are
+reused from the app's `VITE_` ones. See [finance-agent/README.md](finance-agent/README.md).
+
 ## How the data model works
 
 - `households` — one row per family/couple.

@@ -1,0 +1,8 @@
+# Python dependencies for the finance assistant's Vercel function (api/index.py).
+# Vercel installs this file for Python functions; the web app itself is Node (package.json).
+# Local development extras (uvicorn, pytest) are in finance-agent/requirements-dev.txt.
+fastapi==0.115.0
+anthropic==0.40.0
+supabase==2.9.1
+python-dotenv==1.0.1
+pydantic==2.9.2

@@ -3,3 +3,9 @@ dist
 .env
 .DS_Store
 .claude/
+
+# Python (finance assistant)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
