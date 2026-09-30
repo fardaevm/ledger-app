@@ -2,6 +2,7 @@
   "functions": {
     "api/index.py": {
       "includeFiles": "finance-agent/app/**",
+      "excludeFiles": "{.env,**/.env,.env.*,.claude/**,.vercel/**,**/.venv/**,**/__pycache__/**,**/.pytest_cache/**,node_modules/**}",
       "maxDuration": 60
     }
   },

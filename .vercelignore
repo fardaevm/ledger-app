@@ -1,0 +1,9 @@
+# Never upload local secrets or tooling when deploying from this machine (vercel deploy).
+# Vercel's Python builder bundles every project file into the function, so this matters.
+.env
+**/.env
+.claude/
+.vercel/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
