@@ -175,8 +175,11 @@ these endpoints need an allowlist like `ASSISTANT_ALLOWED_EMAILS` first. Webhook
 screen that moves queue rows into `transactions`, and relinking (`ITEM_LOGIN_REQUIRED`) are
 not built yet.
 
-Local testing: `dev/plaid-sandbox.html` (dev server only, never built or deployed) runs
-Link → exchange → sync with the Sandbox login `user_good` / `pass_good`.
+Manual testing: a temporary page, `scripts/plaid-test.html`, is gitignored, so it isn't in
+the repo. It runs Link → exchange → sync against a deployment. Start the dev server with
+`API_TARGET=https://<deployment> npm run dev` (Vite then forwards `/api` there), open
+`/scripts/plaid-test.html`, paste a Supabase access token, and log in with `user_good` /
+`pass_good`.
 
 ## Wiring it into ledger-app
 

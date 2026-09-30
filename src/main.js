@@ -735,40 +735,41 @@ $("chatLog").addEventListener("click", (e) => {
   if (action === "signin") supabase.auth.signOut(); // the app's normal route back to the sign-in screen
 });
 
-// POST /api/chat as the signed-in user (finance-agent's ChatRequest: access_token, message,
-// history). One silent refresh-and-retry on 401, since the token may just have expired.
-async function postChat(message, history, retried = false) {
+// POST to one of our own /api functions (finance-agent) as the signed-in user: they all take
+// the Supabase access token in the body. One silent refresh-and-retry on 401, since the token
+// may just have expired. Returns { status, ok, data, detail }; status 0 = network failure.
+async function apiPost(path, body = {}, retried = false) {
   const token = (await supabase.auth.getSession()).data.session?.access_token;
-  if (!token) return { kind: "auth" };
+  if (!token) return { status: 401, ok: false, data: null, detail: "" };
   let res;
   try {
-    res = await fetch("/api/chat", {
+    res = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: token, message, history })
+      body: JSON.stringify({ access_token: token, ...body })
     });
   } catch {
-    return { kind: "network" };
-  }
-  if (res.ok) {
-    try {
-      const data = await res.json();
-      return { kind: "ok", reply: String(data.reply ?? "") };
-    } catch {
-      return { kind: "server" };
-    }
+    return { status: 0, ok: false, data: null, detail: "" };
   }
   if (res.status === 401 && !retried) {
     const { error } = await supabase.auth.refreshSession();
-    if (!error) return postChat(message, history, true);
+    if (!error) return apiPost(path, body, true);
   }
-  let detail = "";
+  let data = null;
   try {
-    detail = String((await res.json()).detail ?? "");
+    data = await res.json();
   } catch {}
+  return { status: res.status, ok: res.ok, data, detail: res.ok ? "" : String(data?.detail ?? "") };
+}
+
+// POST /api/chat (finance-agent's ChatRequest: access_token, message, history).
+async function postChat(message, history) {
+  const res = await apiPost("/api/chat", { message, history });
+  if (res.status === 0) return { kind: "network" };
+  if (res.ok) return res.data ? { kind: "ok", reply: String(res.data.reply ?? "") } : { kind: "server" };
   if (res.status === 401) return { kind: "auth" };
-  if (res.status === 403) return { kind: /household/i.test(detail) ? "no-household" : "not-allowed" };
-  if (res.status === 503 && /isn't enabled/i.test(detail)) return { kind: "not-configured" };
+  if (res.status === 403) return { kind: /household/i.test(res.detail) ? "no-household" : "not-allowed" };
+  if (res.status === 503 && /isn't enabled/i.test(res.detail)) return { kind: "not-configured" };
   if (res.status === 422) return { kind: "too-long" };
   return { kind: "server" }; // 5xx, including a timed-out function
 }
@@ -861,21 +862,26 @@ function resetChat() {
 }
 
 // ---------------------------------------------------------------------------
-// Members page (from the account menu only). It pushes a history entry, so the browser's or
-// phone's Back button leaves it too; the URL itself doesn't change.
+// Pages outside the nav: Members and Review imports. Opening one pushes a history entry, so
+// the browser's or phone's Back button leaves it too; the URL itself doesn't change. Going
+// from one of them straight to the other replaces the entry, so Back still returns to the view
+// you started from.
 // ---------------------------------------------------------------------------
-function openMembers() {
-  if (state.view !== "members") {
-    state.membersReturn = state.view;
-    showAppView("members");
-    history.pushState({ ledgerView: "members" }, "");
+const SUB_VIEWS = new Set(["members", "imports"]);
+function openSubView(name) {
+  if (state.view === name) return;
+  if (SUB_VIEWS.has(state.view)) {
+    showAppView(name);
+    history.replaceState({ ledgerView: name }, "");
+  } else {
+    state.subReturn = state.view;
+    showAppView(name);
+    history.pushState({ ledgerView: name }, "");
   }
-  $("membersViewTitle").focus();
-  loadMembers();
 }
 // Leaving by our Back button or a nav tab pops that history entry, so the two Backs agree.
-function leaveMembers(to) {
-  if (history.state?.ledgerView === "members") {
+function leaveSubView(to) {
+  if (SUB_VIEWS.has(history.state?.ledgerView)) {
     state.afterPop = to;
     history.back();
   } else {
@@ -883,10 +889,17 @@ function leaveMembers(to) {
   }
 }
 window.addEventListener("popstate", () => {
-  if (state.view === "members") showAppView(state.afterPop || state.membersReturn || "dashboard");
+  if (SUB_VIEWS.has(state.view)) showAppView(state.afterPop || state.subReturn || "dashboard");
   state.afterPop = null;
 });
-$("membersBack").addEventListener("click", () => leaveMembers(state.membersReturn || "dashboard"));
+
+// Members page (from the account menu only).
+function openMembers() {
+  openSubView("members");
+  $("membersViewTitle").focus();
+  loadMembers();
+}
+$("membersBack").addEventListener("click", () => leaveSubView(state.subReturn || "dashboard"));
 $("membersInvite").addEventListener("click", () => {
   const openHere = $("invitePanel").hidden || !$("inviteSlotMembers").contains($("invitePanel"));
   if (openHere) openInvitePanel("inviteSlotMembers", $("membersInvite"));
@@ -938,6 +951,359 @@ function renderMembers() {
     })
     .join("");
 }
+
+// ---------------------------------------------------------------------------
+// Bank connections (Plaid, via /api/plaid/*) and the Review imports page.
+// Connect bank: link-token → Plaid Link → exchange → first sync, then the review page.
+// Synced bank transactions wait in plaid_review_queue; nothing reaches the ledger until someone
+// approves it. Approving goes through approve_plaid_imports() (supabase/schema.sql), which takes
+// amount, date and type from the queued row itself and never adds a bank transaction twice.
+// ---------------------------------------------------------------------------
+const IMPORT_PAGE = 50; // rows shown at once; "Approve all" covers exactly the rows on screen
+const PLAID_SDK = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+const imports = {
+  rows: [],          // unreviewed queue rows on screen, newest first
+  count: 0,          // all unreviewed rows for the household
+  items: [],         // connected banks: [{ item_id, institution_name, created_at }]
+  missing: false,    // the Plaid tables don't exist yet (migration not run)
+  busy: new Set(),   // row ids with an approve/skip in flight
+  bulk: false,       // "Approve all" in flight
+  syncing: false,
+  connecting: false,
+  editing: null      // row whose category sheet is open
+};
+
+// What went wrong with an /api/plaid/* call, in the app's words. A 400 carries Plaid's own
+// code and message (e.g. an expired link), which is worth showing as is.
+function plaidProblem(res) {
+  if (res.status === 0) return "Couldn't reach the server. Check your connection and try again.";
+  if (res.status === 401) return "Your session has expired. Sign out and back in, then try again.";
+  if (res.status === 403) return "Join or create a household before connecting a bank.";
+  if (res.status === 503) return "Bank connections aren't switched on for this app yet.";
+  if (res.status === 400 && res.detail) return res.detail;
+  return "The bank connection service had a problem. Try again in a minute.";
+}
+
+// Plaid's Link script comes from Plaid's CDN, loaded the first time someone connects a bank.
+let plaidSdk = null;
+function loadPlaidSdk() {
+  plaidSdk ??= new Promise((resolve, reject) => {
+    if (window.Plaid) return resolve(window.Plaid);
+    const script = document.createElement("script");
+    script.src = PLAID_SDK;
+    script.onload = () => resolve(window.Plaid);
+    script.onerror = () => {
+      plaidSdk = null; // let the next click try again
+      reject(new Error("plaid sdk"));
+    };
+    document.head.append(script);
+  });
+  return plaidSdk;
+}
+
+const bankNames = () => imports.items.map((i) => i.institution_name || "Bank").join(", ");
+
+async function loadImportsSummary() {
+  if (!state.household) return;
+  const [items, queue] = await Promise.all([
+    supabase.from("plaid_items").select("item_id, institution_name, created_at").eq("household_id", state.household.id).order("created_at"),
+    supabase.from("plaid_review_queue").select("id", { count: "exact", head: true }).eq("household_id", state.household.id).eq("reviewed", false)
+  ]);
+  imports.missing = isMissingTable(items.error) || isMissingTable(queue.error);
+  if (items.error && !imports.missing) console.warn("[Ledger] loading bank connections failed:", items.error.code, items.error.message);
+  imports.items = items.error ? [] : items.data;
+  if (!queue.error) imports.count = queue.count ?? 0;
+  renderImportsBadges();
+}
+
+// The menu's "Review imports" (with its count) and Transactions' "N to review".
+function renderImportsBadges() {
+  const n = imports.count;
+  $("menuImports").hidden = imports.missing || (!imports.items.length && !n);
+  $("menuImportsCount").hidden = !n;
+  $("menuImportsCount").textContent = n;
+  $("menuImportsCount").setAttribute("aria-label", `${n} waiting`);
+  $("txImportsLink").hidden = !n;
+  $("txImportsLink").textContent = `${n} to review`;
+}
+
+async function loadImports() {
+  if (!state.household) return;
+  const { data, error, count } = await supabase
+    .from("plaid_review_queue")
+    .select("id, plaid_transaction_id, suggested_category, amount, date, merchant_name, type", { count: "exact" })
+    .eq("household_id", state.household.id)
+    .eq("reviewed", false)
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(IMPORT_PAGE);
+  if (error) {
+    imports.missing = isMissingTable(error);
+    if (!imports.missing) console.error("[Ledger] loading imports failed:", error);
+    setHint("importsHint", imports.missing ? `Bank imports ${MIGRATION_HINT}` : "Couldn't load the imported transactions. Check your connection and try again.", true);
+    imports.rows = [];
+  } else {
+    imports.rows = data;
+    imports.count = count ?? data.length;
+  }
+  renderImports();
+  renderImportsBadges();
+}
+
+function openImports() {
+  openSubView("imports");
+  $("importsViewTitle").focus();
+  renderImports();
+  loadImportsSummary().then(loadImports);
+}
+
+function importRowHtml(r) {
+  const dateStr = new Date(r.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const name = r.merchant_name || "Bank transaction";
+  const busy = imports.busy.has(r.id) || imports.bulk;
+  const sign = r.type === "expense" ? "-" : "+";
+  // Date beside the name, so the category (what you check before approving) gets line 2 to itself.
+  return `<li class="import-row${busy ? " busy" : ""}" data-id="${escapeHtml(r.id)}">
+    <p class="import-name"><span class="import-merchant" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="import-date">${dateStr}</span></p>
+    <p class="rule-amt import-amt ${r.type}">${sign}${fmtMoney(Number(r.amount))}</p>
+    <p class="import-meta"><button type="button" class="tap-label import-cat" data-edit
+      aria-label="Category: ${escapeHtml(r.suggested_category)}. Change category" title="Change category">${escapeHtml(r.suggested_category)}</button></p>
+    <div class="import-actions">
+      <button type="button" class="btn-secondary btn-sm" data-skip aria-label="Skip ${escapeHtml(name)}"${busy ? " disabled" : ""}>Skip</button>
+      <button type="button" class="btn-primary btn-sm" data-approve aria-label="Approve ${escapeHtml(name)}"${busy ? " disabled" : ""}>Approve</button>
+    </div>
+  </li>`;
+}
+
+function renderImports() {
+  const shown = imports.rows.length;
+  // Connected banks, and Sync now, on one line.
+  const line = $("bankLine");
+  if (imports.missing) {
+    line.textContent = "";
+  } else if (imports.items.length) {
+    line.innerHTML = `<span>Connected: ${escapeHtml(bankNames())}</span><span aria-hidden="true">·</span>${
+      imports.syncing ? "<span>Syncing…</span>" : '<button type="button" class="tap-label" id="bankSync">Sync now</button>'
+    }`;
+  } else {
+    line.textContent = "No bank connected yet.";
+  }
+
+  const primary = $("importsPrimary");
+  primary.hidden = imports.missing;
+  primary.textContent = shown ? `Approve all ${shown}` : "+ Connect bank";
+  primary.disabled = imports.bulk || imports.connecting || (shown > 0 && imports.busy.size > 0);
+
+  $("importList").innerHTML = imports.rows.map(importRowHtml).join("");
+  $("importEmpty").hidden = shown > 0 || imports.missing;
+  // More waiting than shown: the next ones load as these are cleared.
+  $("importMore").hidden = imports.count <= shown || !shown;
+  $("importMore").textContent = `Showing ${shown} of ${imports.count}. The rest appear as you clear these.`;
+}
+
+// Rows leave the screen once reviewed. When the screen empties and more are waiting, the next
+// ones load; otherwise nothing moves under your finger mid-list.
+function dropImportRows(ids) {
+  const gone = new Set(ids);
+  imports.rows = imports.rows.filter((r) => !gone.has(r.id));
+  imports.count = Math.max(0, imports.count - gone.size);
+  ids.forEach((id) => imports.busy.delete(id));
+  renderImports();
+  renderImportsBadges();
+  if (!imports.rows.length && imports.count > 0) loadImports();
+}
+
+// One summary line for any approve: what went in, and anything that didn't.
+function approveSummary(results) {
+  const n = (outcome) => results.filter((r) => r.outcome === outcome).length;
+  const added = n("approved"), dup = n("duplicate"), done = n("already_reviewed"), missing = n("not_found");
+  const parts = [];
+  if (added) parts.push(`Added ${added} ${added === 1 ? "transaction" : "transactions"} to your ledger.`);
+  if (dup) parts.push(`${dup} ${dup === 1 ? "was" : "were"} already in it, so ${dup === 1 ? "it wasn't" : "they weren't"} added again.`);
+  if (done) parts.push(`${done} had already been reviewed by someone else.`);
+  if (missing) parts.push(`${missing} couldn't be found any more.`);
+  return parts.join(" ");
+}
+
+async function approveImports(rows) {
+  const ids = rows.map((r) => r.id);
+  ids.forEach((id) => imports.busy.add(id));
+  renderImports();
+  const { data, error } = await supabase.rpc("approve_plaid_imports", {
+    items: rows.map((r) => ({ id: r.id, category: r.suggested_category }))
+  });
+  if (error) {
+    ids.forEach((id) => imports.busy.delete(id));
+    renderImports();
+    console.error("[Ledger] approve_plaid_imports failed:", error);
+    const message = error.code === "PGRST202"
+      ? `Approving ${MIGRATION_HINT}`
+      : !error.code ? "Couldn't reach the server. Check your connection and try again." : `Couldn't approve (error ${error.code}). Try again.`;
+    return setHint("importsHint", message, true);
+  }
+  setHint("importsHint", approveSummary(data));
+  dropImportRows(data.map((r) => r.queue_id));
+  // The new entries (realtime brings them too, but not always before this screen is left).
+  if (data.some((r) => r.outcome === "approved")) {
+    if (await fetchTransactions()) render();
+    loadCategoryUsage();
+  }
+}
+
+async function skipImport(row) {
+  imports.busy.add(row.id);
+  renderImports();
+  // .select("id"): a row someone else already reviewed matches nothing and returns no rows.
+  const { data, error } = await supabase.from("plaid_review_queue").update({ reviewed: true }).eq("id", row.id).eq("reviewed", false).select("id");
+  if (error) {
+    imports.busy.delete(row.id);
+    renderImports();
+    console.error("[Ledger] skipping an import failed:", error);
+    return setHint("importsHint", error.code ? "Couldn't skip it. Try again." : "Couldn't reach the server. Check your connection and try again.", true);
+  }
+  setHint("importsHint", data.length ? `Skipped ${row.merchant_name || "it"}: not added to your ledger.` : "Someone else had already reviewed that one.");
+  dropImportRows([row.id]);
+}
+
+$("importList").addEventListener("click", (e) => {
+  const li = e.target.closest(".import-row");
+  const row = li && imports.rows.find((r) => r.id === li.dataset.id);
+  if (!row || imports.busy.has(row.id) || imports.bulk) return;
+  if (e.target.closest("[data-approve]")) approveImports([row]);
+  else if (e.target.closest("[data-skip]")) skipImport(row);
+  else if (e.target.closest("[data-edit]")) openImportCategory(row, e.target.closest("[data-edit]"));
+});
+
+$("importsPrimary").addEventListener("click", async () => {
+  if (!imports.rows.length) return connectBank();
+  imports.bulk = true;
+  await approveImports(imports.rows.filter((r) => !imports.busy.has(r.id)));
+  imports.bulk = false;
+  renderImports();
+});
+$("importsBack").addEventListener("click", () => leaveSubView(state.subReturn || "dashboard"));
+$("bankLine").addEventListener("click", (e) => {
+  if (e.target.closest("#bankSync")) syncBanks();
+});
+$("txImportsLink").addEventListener("click", openImports);
+
+// ---- The category sheet: the same searchable picker as Add transaction ----
+const importCategory = categoryPicker({
+  input: $("iCategoryInput"),
+  list: $("iCategoryList"),
+  hidden: $("iCategory"),
+  status: $("iCategoryStatus"),
+  getGroups: () => CATEGORIES[imports.editing?.type || "expense"]
+});
+
+function openImportCategory(row, opener) {
+  imports.editing = row;
+  const valid = CATEGORIES[row.type].some(([, names]) => names.includes(row.suggested_category));
+  $("importCatWhat").textContent = `${row.merchant_name || "Bank transaction"} · ${row.type === "expense" ? "-" : "+"}${fmtMoney(Number(row.amount))}`;
+  $("importCatError").textContent = "";
+  importCategory.set(valid ? row.suggested_category : ""); // before focus, which opens the list on it
+  openSheet($("importCatSheet"), { opener, fallback: () => $("importList"), focus: $("iCategoryInput") });
+}
+
+$("importCatForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const row = imports.editing;
+  if (!row) return;
+  if (!importCategory.validate()) {
+    $("importCatError").textContent = "Choose a category from the list.";
+    return $("iCategoryInput").focus();
+  }
+  const category = importCategory.value();
+  if (category !== row.suggested_category) {
+    $("importCatSave").disabled = true;
+    // Saved on the queued row, so a partner sees the change and it survives a reload.
+    const { data, error } = await supabase.from("plaid_review_queue").update({ suggested_category: category }).eq("id", row.id).eq("reviewed", false).select("id");
+    $("importCatSave").disabled = false;
+    if (error || !data?.length) {
+      if (error) console.error("[Ledger] saving an import's category failed:", error);
+      $("importCatError").textContent = error
+        ? (error.code ? "Couldn't save the category. Try again." : "Couldn't reach the server. Check your connection and try again.")
+        : "Someone else has already reviewed this one.";
+      return;
+    }
+    row.suggested_category = category;
+    renderImports();
+  }
+  await closeSheet($("importCatSheet"));
+  // The row was re-rendered, so the opener is gone: return focus to its new category button.
+  document.querySelector(`.import-row[data-id="${CSS.escape(row.id)}"] .import-cat`)?.focus({ preventScroll: true });
+});
+$("importCatSheet").addEventListener("close", () => {
+  imports.editing = null;
+  $("importCatForm").reset();
+  $("importCatError").textContent = "";
+});
+
+// ---- Connect bank and sync ----
+async function syncBanks({ after } = {}) {
+  if (imports.syncing) return;
+  imports.syncing = true;
+  renderImports();
+  const before = imports.count;
+  const res = await apiPost("/api/plaid/sync");
+  imports.syncing = false;
+  if (!res.ok) {
+    renderImports();
+    return setHint("importsHint", plaidProblem(res), true);
+  }
+  await loadImportsSummary();
+  await loadImports();
+  const failed = (res.data?.items || []).filter((i) => i.status !== "ok");
+  const added = Math.max(0, imports.count - before);
+  const parts = [after, added ? `${added} new ${added === 1 ? "transaction" : "transactions"} to review.` : "No new transactions."];
+  for (const f of failed) parts.push(`Couldn't sync ${f.institution_name || "a bank"} (Plaid: ${f.error_code}).`);
+  setHint("importsHint", parts.filter(Boolean).join(" "), failed.length > 0);
+}
+
+// Link token → Plaid Link → exchange → first sync (the flow proven in scripts/plaid-test.html).
+async function connectBank() {
+  if (imports.connecting) return;
+  imports.connecting = true;
+  renderImports();
+  const done = (message) => {
+    imports.connecting = false;
+    renderImports();
+    if (message) notify(message);
+  };
+  const res = await apiPost("/api/plaid/link-token");
+  if (!res.ok) return done(plaidProblem(res));
+  let Plaid;
+  try {
+    Plaid = await loadPlaidSdk();
+  } catch {
+    return done("Couldn't load Plaid's connection window. Check your connection and try again.");
+  }
+  const handler = Plaid.create({
+    token: res.data.link_token,
+    onSuccess: async (publicToken, metadata) => {
+      const bank = metadata?.institution?.name || "Your bank";
+      const ex = await apiPost("/api/plaid/exchange", { public_token: publicToken });
+      if (!ex.ok) return done(`Couldn't connect ${bank}. ${plaidProblem(ex)}`);
+      imports.connecting = false;
+      openImports();
+      setHint("importsHint", `${ex.data?.institution_name || bank} connected. Syncing transactions now…`);
+      await loadImportsSummary();
+      await syncBanks({ after: `${ex.data?.institution_name || bank} connected.` });
+    },
+    // Closing Plaid's window without finishing isn't an error; a real failure says so.
+    onExit: (err) => done(err ? `The bank connection didn't finish: ${err.display_message || err.error_message || err.error_code}.` : "")
+  });
+  handler.open();
+}
+
+$("menuConnectBank").addEventListener("click", () => {
+  closeAccountMenu(false);
+  connectBank();
+});
+$("menuImports").addEventListener("click", () => {
+  closeAccountMenu(false);
+  openImports();
+});
 
 // ---------------------------------------------------------------------------
 // ledger (main app view)
@@ -1267,7 +1633,9 @@ function txRowHtml(t, myId) {
   const dateStr = new Date(t.date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const who = state.names[t.author_id] || (t.author_email ? t.author_email.split("@")[0] : "—");
   const canDelete = myId && t.author_id === myId;
-  const auto = t.recurring_rule_id ? ' <span class="tx-badge" title="Added automatically by a recurring rule">Recurring</span>' : "";
+  const auto = t.recurring_rule_id
+    ? ' <span class="tx-badge" title="Added automatically by a recurring rule">Recurring</span>'
+    : t.source === "plaid" ? ' <span class="tx-badge" title="Imported from a connected bank">Bank</span>' : "";
   return `
     <tr>
       <td class="tx-date">${dateStr}</td>
@@ -1891,7 +2259,7 @@ $("breakdownToggle").addEventListener("click", (e) => {
 // ---------------------------------------------------------------------------
 // views: Dashboard / Transactions / Recurring / Debts (show/hide, no router)
 // ---------------------------------------------------------------------------
-const VIEW_IDS = { dashboard: "viewDashboard", transactions: "viewTransactions", recurring: "viewRecurring", debts: "viewDebts", members: "viewMembers" };
+const VIEW_IDS = { dashboard: "viewDashboard", transactions: "viewTransactions", recurring: "viewRecurring", debts: "viewDebts", members: "viewMembers", imports: "viewImports" };
 
 function notify(message) {
   $("noticeBanner").textContent = message || "";
@@ -1933,7 +2301,7 @@ new ResizeObserver(([entry]) => {
 document.querySelector(".app-nav").addEventListener("click", (e) => {
   const btn = e.target.closest(".nav-item");
   if (!btn) return;
-  if (state.view === "members") leaveMembers(btn.dataset.view);
+  if (SUB_VIEWS.has(state.view)) leaveSubView(btn.dataset.view);
   else showAppView(btn.dataset.view);
 });
 
@@ -2712,6 +3080,7 @@ document.addEventListener("visibilitychange", async () => {
   loadRules();
   loadDebts();
   loadCategoryUsage();
+  loadImportsSummary();
 });
 
 async function startLedger() {
@@ -2731,6 +3100,7 @@ async function startLedger() {
   loadRules();
   loadDebts();
   loadCategoryUsage();
+  loadImportsSummary();
 
   if (state.realtimeChannel) supabase.removeChannel(state.realtimeChannel);
   state.realtimeChannel = supabase
@@ -2765,6 +3135,11 @@ function resetSignedInState() {
   state.journeyPct = undefined;
   state.debtView = null; // the next person reads their own saved choice
   state.categoryUsage = null;
+  Object.assign(imports, { rows: [], count: 0, items: [], missing: false, bulk: false, syncing: false, connecting: false, editing: null });
+  imports.busy.clear();
+  renderImports(); // the old household's rows out of the DOM too
+  renderImportsBadges();
+  setHint("importsHint", "");
   document.querySelectorAll("dialog.sheet[open]").forEach((sheet) => sheet.close());
   resetChat(); // a new sign-in starts a fresh conversation
   showAppView("dashboard");

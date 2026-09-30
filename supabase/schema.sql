@@ -775,3 +775,59 @@ create policy "members update household review queue"
 drop policy if exists "members clear household review queue" on plaid_review_queue;
 create policy "members clear household review queue"
   on plaid_review_queue for delete using (household_id in (select my_household_ids()));
+
+-- MIGRATION 2026-09-30: approving imported bank transactions ---------------------------
+-- Existing projects: run just this block in the SQL editor. Safe to re-run. Adds one function;
+-- changes no table or row.
+-- The app can't write source / plaid_transaction_id itself (see the column grant in
+-- 2026-09-27b), so approving goes through here. Amount, date, type and note come from the
+-- queued row, never from the caller: only the category can be changed. Each row is locked,
+-- inserted and marked reviewed in one transaction. If the bank transaction is already in the
+-- ledger (a double approve, or a partner approving at the same moment) the unique
+-- plaid_transaction_id makes the insert a no-op, reported as 'duplicate', never an error.
+-- items: [{"id": "<queue row id>", "category": "Groceries"}, ...]
+-- Returns one row per item: outcome is approved | duplicate | already_reviewed | not_found.
+create or replace function approve_plaid_imports(items jsonb)
+returns table (queue_id uuid, outcome text)
+language plpgsql
+volatile
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  uid uuid := auth.uid();
+  item jsonb;
+  q plaid_review_queue%rowtype;
+  cat text;
+  rows_in integer;
+begin
+  if uid is null then
+    raise exception 'not_authenticated';
+  end if;
+  if jsonb_typeof(items) is distinct from 'array' or jsonb_array_length(items) > 200 then
+    raise exception 'invalid_items';
+  end if;
+  for item in select * from jsonb_array_elements(items)
+  loop
+    queue_id := (item ->> 'id')::uuid;
+    select * into q from plaid_review_queue where id = queue_id for update;
+    if not found or not exists (select 1 from household_members where household_id = q.household_id and user_id = uid) then
+      outcome := 'not_found';
+    elsif q.reviewed then
+      outcome := 'already_reviewed';
+    else
+      cat := left(coalesce(nullif(btrim(item ->> 'category'), ''), q.suggested_category), 80);
+      insert into transactions (household_id, type, amount, date, category, note, author_id, author_email, source, plaid_transaction_id)
+      select q.household_id, q.type, q.amount, q.date, cat, left(coalesce(q.merchant_name, ''), 200), uid, u.email, 'plaid', q.plaid_transaction_id
+      from auth.users u where u.id = uid
+      on conflict (plaid_transaction_id) do nothing;
+      get diagnostics rows_in = row_count;
+      update plaid_review_queue set reviewed = true, suggested_category = cat where id = q.id;
+      outcome := case when rows_in = 1 then 'approved' else 'duplicate' end;
+    end if;
+    return next;
+  end loop;
+end;
+$$;
+revoke execute on function approve_plaid_imports(jsonb) from public, anon;
+grant execute on function approve_plaid_imports(jsonb) to authenticated;

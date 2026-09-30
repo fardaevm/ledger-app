@@ -142,7 +142,10 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
   it, right-aligned, 272px wide, in this order:
   1. Identity (not interactive): display name (`profiles`) and email (the session's).
   2. — **Members** (opens the Members page) · **Invite partner** (opens the invite panel
-     directly)
+     directly) · **Connect bank** (opens Plaid Link straight away) · **Review imports** (opens
+     the Review imports page; a `--brass` count pill shows how many are waiting). These are the
+     household actions: people and banks. "Review imports" appears once a bank is connected
+     or imports are waiting.
   3. — **Edit display name** (inline field inside the dropdown: Cancel / Save as an equal
      pair; Escape closes just the field) · **Change password** (sends Supabase's reset email to
      your own address; the result shows as a hint inside the dropdown)
@@ -202,6 +205,39 @@ Every element that shows money uses `font-variant-numeric: tabular-nums`.
   months" with the exact date in the tooltip), then **Invite partner**. Other members' emails
   come from the `household_roster()` function (auth.users isn't readable from the app). Before
   its migration is run, the page shows names and join dates, only your own email, and a hint.
+- **Review imports page** (`#viewImports`): bank transactions synced from Plaid wait here
+  until someone decides. **Nothing reaches the ledger unreviewed.** It's a page outside the nav,
+  like Members (same Back and history handling, `openSubView()` / `leaveSubView()`). It's
+  reached from the account menu, and from a **"N to review"** tappable label beside the
+  Transactions title whenever anything is waiting (not buried).
+  - Under the title, one line: "Connected: First Platypus Bank · **Sync now**". This is where
+    the connected banks are listed.
+  - One bordered list, one two-line row per transaction (`.import-row`, about 95px at 375px).
+    Line 1: merchant and its date (dim), amount in the money colour. Line 2: the **category as a
+    tappable label**, which gets the line to itself because it's what you check before approving,
+    then **Skip / Approve** as an equal pair (symmetry rule).
+  - Tapping the category opens a sheet (`#importCatSheet`) with the same `categoryPicker()` as
+    Add transaction, already on the current choice. Saving writes it to the queued row, so a
+    partner sees it too.
+  - **Approve** goes through `approve_plaid_imports()`: amount, date and type come from the
+    queued row, only the category can change. A bank transaction already in the ledger is
+    skipped and reported ("1 was already in it, so it wasn't added again."), never an error.
+    **Skip** marks it reviewed without adding anything (e.g. a transfer between your own
+    accounts). Either way the row leaves the list.
+  - **50 rows at a time.** The primary action (the mobile action bar) is **"Approve all N"**,
+    where N is exactly the rows on screen, each with its category visible. Nothing is approved
+    unseen. "Showing 50 of 324" sits under the list; the next ones load once the screen is
+    cleared, so rows never shift under a finger mid-list.
+  - Empty: "No transactions waiting for review", and the primary becomes **+ Connect bank**
+    (the same state-driven primary as Debts).
+  - Results of approve, skip, sync and connect show as a hint under the bank line.
+  - Approved entries carry a neutral **"Bank"** badge in the lists, like "Recurring".
+- **Connect bank** (account menu, or the empty page's primary):
+  - `/api/plaid/link-token`, then Plaid Link (its script is loaded from Plaid's CDN on first
+    use), then `/api/plaid/exchange`. Then it opens Review imports and runs the first
+    `/api/plaid/sync` straight away.
+  - Closing Plaid's window isn't an error. Real failures (session, no household, not
+    switched on, Plaid's own message) show in the notice banner of the view you started from.
 - **Mobile action bar** (`.add-toggle` at ≤ 720px): each view's primary action becomes one bar
   fixed **directly above the tab bar**, and it must be **pixel-identical on every view**. Only
   the label and the action change. Height is `--actionbar-h` (44px, next to `--tabbar-h`:

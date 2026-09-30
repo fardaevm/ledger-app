@@ -181,6 +181,9 @@
             <hr>
             <button type="button" class="account-item" id="menuMembers">Members</button>
             <button type="button" class="account-item" id="menuInvite">Invite partner</button>
+            <button type="button" class="account-item" id="menuConnectBank">Connect bank</button>
+            <!-- Shown once a bank is connected or imports are waiting; the pill is the waiting count. -->
+            <button type="button" class="account-item" id="menuImports" hidden>Review imports<span class="menu-count" id="menuImportsCount" hidden></span></button>
             <hr>
             <button type="button" class="account-item" id="menuEditName" aria-expanded="false" aria-controls="nameForm">Edit display name</button>
             <form class="name-form" id="nameForm" hidden novalidate>
@@ -340,7 +343,11 @@
 
       <!-- ================= TRANSACTIONS ================= -->
       <section class="app-view" id="viewTransactions" aria-labelledby="txViewTitle" hidden>
-        <div class="view-head"><h2 class="view-title" id="txViewTitle">Transactions</h2></div>
+        <div class="view-head">
+          <h2 class="view-title" id="txViewTitle">Transactions</h2>
+          <!-- "N to review": imported bank transactions waiting on the Review imports page. -->
+          <button type="button" class="tap-label" id="txImportsLink" hidden></button>
+        </div>
         <!-- Sticky while scrolling: add button, type filter and search stay in reach. -->
         <div class="tx-toolbar" id="txToolbar">
         <div class="entry-slot"></div>
@@ -416,6 +423,24 @@
           <button type="button" class="btn-primary" id="membersInvite" aria-expanded="false" aria-controls="invitePanel">Invite partner</button>
         </div>
         <div class="invite-slot" id="inviteSlotMembers"></div>
+      </section>
+
+      <!-- ================= REVIEW IMPORTS (account menu, or "N to review" on Transactions) ================= -->
+      <section class="app-view" id="viewImports" aria-labelledby="importsViewTitle" hidden>
+        <button type="button" class="back-btn" id="importsBack">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5"/></svg>Back
+        </button>
+        <div class="view-head"><h2 class="view-title" id="importsViewTitle" tabindex="-1">Review imports</h2></div>
+        <!-- Connected banks and "Sync now". Filled by renderImports(). -->
+        <p class="bank-line" id="bankLine"></p>
+        <p class="hint" id="importsHint" role="status" aria-live="polite"></p>
+        <div class="entry-area">
+          <!-- "Approve all N" while rows are waiting, "+ Connect bank" when the queue is clear. -->
+          <button class="add-toggle" id="importsPrimary"></button>
+        </div>
+        <ul class="import-list" id="importList" aria-label="Imported transactions waiting for review"></ul>
+        <p class="import-more" id="importMore" hidden></p>
+        <div class="empty" id="importEmpty" hidden>No transactions waiting for review</div>
       </section>
 
       <!-- ===== Sheets: every add/edit form opens in one of these (DESIGN.md "Sheets").
@@ -588,6 +613,36 @@
           </div>
           <p class="form-error" id="sheetError" role="alert"></p>
           <button type="submit" class="btn-primary" id="sheetSubmit">Log payment</button>
+        </form>
+      </dialog>
+
+      <!-- Change an imported transaction's category before approving it (same picker as Add transaction). -->
+      <dialog class="sheet" id="importCatSheet" aria-labelledby="importCatTitle">
+        <form class="sheet-form" id="importCatForm" novalidate>
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h2 class="form-title" id="importCatTitle">Category</h2>
+            <button type="button" class="goal-close" data-sheet-close aria-label="Close">×</button>
+          </div>
+          <p class="sheet-sub" id="importCatWhat"></p>
+          <div class="field picker-field">
+            <label for="iCategoryInput" id="iCategoryLabel">Category</label>
+            <div class="picker">
+              <input type="text" id="iCategoryInput" class="picker-input" role="combobox"
+                aria-autocomplete="list" aria-expanded="false" aria-controls="iCategoryList"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                placeholder="Search or choose" required>
+              <svg class="picker-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+              <input type="hidden" id="iCategory">
+              <div class="picker-list" id="iCategoryList" role="listbox" aria-labelledby="iCategoryLabel" hidden></div>
+              <span class="visually-hidden" id="iCategoryStatus" role="status"></span>
+            </div>
+          </div>
+          <div class="form-actions">
+            <span class="form-error" id="importCatError"></span>
+            <button type="button" class="btn-secondary" data-sheet-close>Cancel</button>
+            <button type="submit" class="btn-primary" id="importCatSave">Save category</button>
+          </div>
         </form>
       </dialog>
 

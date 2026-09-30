@@ -4,8 +4,9 @@ import { VitePWA } from "vite-plugin-pwa";
 export default defineConfig({
   // Local dev: the finance assistant runs on uvicorn (port 8000); proxying /api keeps it on
   // the same origin, exactly like the deployed app, where it's a Vercel function.
+  // API_TARGET=https://<deployment> npm run dev sends /api to a deployment instead.
   server: {
-    proxy: { "/api": "http://localhost:8000" }
+    proxy: { "/api": { target: process.env.API_TARGET || "http://localhost:8000", changeOrigin: true } }
   },
   plugins: [
     VitePWA({

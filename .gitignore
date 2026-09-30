@@ -10,3 +10,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 .vercel/
+
+# Temporary Plaid test page: local only, never committed or deployed
+scripts/plaid-test.html
