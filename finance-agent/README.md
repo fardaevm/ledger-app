@@ -122,6 +122,10 @@ Nothing separate to deploy: pushing the repo deploys the app **and** the assista
   it up to 60 s per request (`maxDuration`), and rewrites every `/api/*` path to it. Every
   other path still goes to the app.
 - `requirements.txt` at the repo root holds the runtime dependencies Vercel installs.
+  **Vercel ignores `.python-version`** and runs the newest Python it supports (3.14 as of
+  2026-09), and it can't compile packages from source. So every pin needs prebuilt Linux
+  wheels for that Python: pydantic 2.9.2 didn't, and failed the first deploy. The check
+  command is in the file's header. The tests pass on 3.12 (local) and 3.14.
 - The PWA service worker leaves `/api/` alone (`navigateFallbackDenylist` in
   `vite.config.js`).
 

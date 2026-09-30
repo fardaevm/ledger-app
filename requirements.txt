@@ -1,8 +1,15 @@
 # Python dependencies for the finance assistant's Vercel function (api/index.py).
 # Vercel installs this file for Python functions; the web app itself is Node (package.json).
 # Local development extras (uvicorn, pytest) are in finance-agent/requirements-dev.txt.
-fastapi==0.115.0
+#
+# Vercel's build ignores .python-version and runs the newest Python it supports (3.14 as of
+# 2026-09), with nothing compiled from source. So every pin here, and everything they pull
+# in (pydantic-core, jiter), must have prebuilt Linux wheels for that Python. pydantic 2.9.x
+# didn't, and failed the deploy. Check before bumping:
+#   uv pip compile requirements.txt --python-version 3.14 \
+#     --python-platform x86_64-manylinux_2_28 --only-binary :all:
+fastapi==0.142.1
 anthropic==0.40.0
 supabase==2.9.1
 python-dotenv==1.0.1
-pydantic==2.9.2
+pydantic==2.13.5
