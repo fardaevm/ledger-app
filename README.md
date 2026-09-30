@@ -1,167 +1,111 @@
 # Ledger
 
-A shared income & expense tracker for two (or more) people, with realtime
-sync. Built with Vite + vanilla JS + Supabase, installable as a PWA.
+A shared household finance app for two people, with an AI assistant that answers questions from the household's own numbers and a bank import flow that never writes to the ledger without a human's approval.
 
-People sign in with **email + password** (confirmed by email), and join a
-partner's household through a **single-use invite link**.
+**Live demo: [ledger-app-mocha-nine.vercel.app](https://ledger-app-mocha-nine.vercel.app)** (sign-up is open; bank connections run against Plaid's Sandbox)
 
-## 1. Create a Supabase project
+<p>
+  <img src="docs/screenshots/review-imports-desktop.png" alt="Review imports screen on desktop: imported bank transactions with editable categories and Skip / Approve buttons" width="68%">
+  <img src="docs/screenshots/review-imports-mobile.png" alt="The same screen at phone width, with Approve all as the bottom action bar" width="27%">
+</p>
 
-1. Go to https://supabase.com and create a free project.
-2. Open **SQL Editor > New query**, paste the entire contents of
-   `supabase/schema.sql`, and run it. On a brand-new project, also run the
-   two commented-out lines at the very end (the "PHASE 2" block) — there are
-   no old invite codes to keep.
-3. Open **Project Settings > API** and copy the **Project URL** and the
-   **anon public key**.
+<sub>Screenshots use sample data.</sub>
 
-### Authentication settings (dashboard only — these can't be set from code)
+## What this is
 
-Open **Authentication** in the Supabase dashboard:
+A finance app my partner and I actually use, built for that and not as a tutorial. Two people share one household: they log income and expenses, see the month's profit against a goal, and track paying off credit cards and loans (framed as progress paid off, not as money owed). Rent, salary and subscriptions are recurring rules that add themselves each month. An assistant answers questions like "which card should we pay off first?" by calling tools over the household's own data. A connected bank account feeds a review queue: every imported transaction waits there until someone approves it, edits its category or skips it.
 
-- **Sign In / Providers > Email**
-  - Email provider: **enabled**.
-  - **Confirm email: ON.** New accounts can't sign in until they click the
-    link in their confirmation email. (If this is off, the app logs a
-    warning in the browser console at sign-up.)
-  - **Secure password change: ON** (asks for a recent sign-in before a
-    password change).
-  - **Minimum password length: 8** or more. The app checks 8 characters
-    in the browser, but the server-side setting is what actually enforces it.
-- **Attack Protection**
-  - **Leaked password protection** (rejects passwords found in known breaches
-    via HaveIBeenPwned) — turn on if your plan includes it.
-  - CAPTCHA (Turnstile or hCaptcha) is also available here; the app doesn't
-    send a CAPTCHA token yet, so enabling it would require a code change.
-- **Rate Limits** — this is where sign-in / sign-up throttling lives. The
-  defaults are reasonable; tighten **"sign-ups and sign-ins"** (per IP),
-  **"token verifications"**, and **"emails sent"** if you want. Supabase
-  enforces these per IP on its side; there is no client-side equivalent
-  worth trusting.
-- **URL Configuration**
-  - **Site URL:** your deployed URL (e.g. `https://ledger.example.com`).
-  - **Redirect URLs:** add `https://ledger.example.com/**` and
-    `http://localhost:5173/**`. The `/**` wildcard matters: confirmation and
-    reset emails send people back to `/invite/<token>` when they signed up
-    from an invite link.
-- **Emails > SMTP Settings** — Supabase's built-in email sender is only for
-  testing and allows very few emails per hour. For real use, connect your own
-  SMTP provider, or confirmation and reset emails will stop arriving.
+Also built: email and password sign-up, single-use invite links for a partner, realtime sync between phones, dark mode, and an installable PWA. The UI is designed mobile-first, and every visual rule is written down in [DESIGN.md](DESIGN.md).
 
-## 2. Configure the app
+## Notable technical decisions
 
-```bash
-cp .env.example .env
+**The model never does the maths.** The assistant ([finance-agent/](finance-agent/)) is a hand-written tool-calling loop around Claude, with no agent framework: at most 6 rounds of "model asks for a tool, Python runs it, the result goes back". Its 10 tools ([app/tools.py](finance-agent/app/tools.py)) cover spending summaries and comparisons, recurring-charge detection, debts with payoff projections, and the profit goal. The system prompt forbids stating any number that didn't come from a tool call in the conversation. Several tools mirror the web app's own calculations line for line (the debt percentages, the Debts page's payoff estimate, the Dashboard's automatic goal), so the assistant and the UI can't disagree. [tests/test_tools.py](finance-agent/tests/test_tools.py) holds 21 tests on those tools against an in-memory fake Supabase, with no network. They pin the sums, the rounding, household isolation, and edge cases like a minimum payment that never covers the interest. The prompt also carries the Debts page's tone rules: lead with progress, and raise concern only for a real problem the numbers show.
+
+**Row-level security is the authorization boundary, not application code.** Postgres policies scope every table (`households`, `household_members`, `transactions`, `debts`, `recurring_rules`, the Plaid tables) to the households the signed-in user belongs to, and only an entry's author can delete it. Column grants stop the browser from setting fields only the server should write (which rule or debt created an entry, or a bank transaction's id). Multi-step writes are `security definer` functions that check membership themselves and run as one transaction: logging a debt payment, creating recurring entries, redeeming an invite. The Python backend never uses a service-role key. It verifies the caller's Supabase JWT with Supabase Auth, then queries through a client scoped to that same JWT, so the assistant and the Plaid endpoints can see exactly what the user could see in the browser, no more. Invite links store only a SHA-256 hash of their token, and expire after 7 days or one use.
+
+**Plaid access tokens are treated as live bank credentials.** They're encrypted with Fernet ([app/token_crypto.py](finance-agent/app/token_crypto.py)) before they reach the database, and decrypted only in memory, just before a Plaid call. They're never logged or returned in a response. If saving a new connection fails, the item is removed at Plaid, so no connection is left that nothing here knows about. The Plaid client refuses any environment but Sandbox until Production has had its own review.
+
+**No silent imports.** Syncing never writes to the ledger. `/transactions/sync` pages into `plaid_review_queue`, together with the raw Plaid payload for debugging, and nothing reaches `transactions` until a person approves it. The one write path that needs more trust than the browser has is a database function, `approve_plaid_imports()`. It copies amount, date and type from the queued row (the caller can only change the category), inserts the entry and marks the row reviewed in one transaction. A unique `plaid_transaction_id` turns a double approve, or two partners approving at once, into a reported `duplicate` rather than a second entry. The sync is idempotent: the cursor is saved last, rows are upserted, and pending transactions are skipped because Plaid later re-issues them as posted under a new id. So a failed run simply repeats.
+
+**Costs and abuse are closed by default.** Sign-up is open, so the assistant answers only emails in `ASSISTANT_ALLOWED_EMAILS` (an unset list lets nobody in), and requests have size caps. The API is same-origin, so it needs no CORS at all.
+
+## Tech stack
+
+- **Frontend:** Vite + vanilla JavaScript (no framework), installable as a PWA
+- **Data and auth:** Supabase: Postgres, Auth, Realtime and row-level security
+- **Backend:** FastAPI (Python), deployed as a Vercel Python function in the same project
+- **AI:** Anthropic's Claude API with tool use (Claude Haiku 4.5)
+- **Bank data:** Plaid (Transactions, via `/transactions/sync`)
+
+## Architecture
+
+```
+Browser (Vite build, PWA)
+  │
+  ├── static app ─────────────── Vercel (dist/)
+  │
+  ├── supabase-js ────────────── Supabase: Postgres + RLS, Auth, Realtime
+  │                               (reads, simple writes, and the security-definer
+  │                                functions for multi-step writes)
+  │
+  └── POST /api/* (same origin) ─ Vercel Python function (api/index.py → FastAPI)
+        │  body carries the user's Supabase JWT; verified with Supabase Auth
+        │
+        ├── Supabase, as that user (JWT-scoped client, RLS applies; no service key)
+        ├── /api/chat        → Anthropic Claude ⇄ tools.py (all arithmetic in Python)
+        └── /api/plaid/*     → Plaid Sandbox (link-token, exchange, sync)
+                                 └→ plaid_review_queue → human review → transactions
 ```
 
-Fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` with the values
-from step 1. (The anon key is designed to be public; row-level security is
-what protects the data.)
+## Running it yourself
 
-## 3. Run it locally
+**Supabase**
+1. Create a project and run all of [`supabase/schema.sql`](supabase/schema.sql) in the SQL editor. An existing project runs only the dated `MIGRATION` blocks it hasn't had yet. Each one is safe to re-run.
+2. In Authentication, turn on **Confirm email**, set a minimum password length of 8, and add your site URL plus `http://localhost:5173/**` to the redirect URLs. Invite and reset emails need the `/**`. For real use, connect your own SMTP server: Supabase's built-in sender is rate-limited.
+
+**Web app**
 
 ```bash
+cp .env.example .env        # VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY (public by design; RLS protects the data)
 npm install
-npm run dev
+npm run dev                 # http://localhost:5173
 ```
 
-Open the printed localhost URL, choose **Create account**, and enter your
-name, email and a password. Confirm your email, sign in, and name your
-household. Then open the account icon (top right) and choose **Invite partner** to get a link to send
-them — it works once and expires after 7 days.
-
-## Upgrading an existing project from magic-link sign-in
-
-If you already use Ledger with the old email-link sign-in, your accounts,
-household and entries carry over unchanged:
-
-1. In the SQL editor, run only the block headed
-   **`MIGRATION 2026-09-26b`** at the end of `supabase/schema.sql`. It adds
-   tables and tightens access rules; it doesn't change any existing
-   household, membership, transaction or user row.
-2. Apply the **Authentication settings** above (especially the redirect URLs).
-3. Each existing person opens the app and clicks **"Reset your password to
-   set one"** on the sign-in screen. The email link lets them choose a
-   password, and they land straight in their existing household.
-4. Once **everyone** has signed in with a password and sees their data, run
-   the two **PHASE 2** lines at the end of `schema.sql` to remove the old
-   typed invite codes. Don't leave this long: until then, the old 8-character
-   codes still work as a (weak) way to join.
-
-Existing accounts get a display name taken from their email address (the
-part before the @). To change it:
-`update profiles set display_name = 'Ali' where id = '<user id>';`
-
-## 4. Deploy
-
-Any static host works (Vercel, Netlify, Cloudflare Pages):
+**Assistant and bank API (optional locally)**
 
 ```bash
-npm run build
+cd finance-agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env        # ANTHROPIC_API_KEY, ASSISTANT_ALLOWED_EMAILS, PLAID_* (see the file)
+pytest tests/               # 50 tests, no network
+uvicorn app.main:app --port 8000
 ```
 
-This outputs a static `dist/` folder. Set the build command to
-`npm run build`, output directory `dist`, and add the two `VITE_SUPABASE_*`
-environment variables in the host's dashboard.
+Vite proxies `/api` to port 8000, so the app talks to the backend on its own origin, just as it does in production. `API_TARGET=https://<deployment> npm run dev` points the proxy at a deployment instead.
 
-**Invite links need a single-page-app rewrite** so `/invite/<token>` serves
-`index.html`:
+**Deploy (Vercel)**
 
-- Netlify: add `public/_redirects` containing `/*  /index.html  200`
-- Vercel: add `vercel.json` with
-  `{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }`
-- Cloudflare Pages: works out of the box.
+Import the repo. `vercel.json` already routes `/api/*` to the Python function and everything else to the app. Add these environment variables:
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+- `ANTHROPIC_API_KEY` and `ASSISTANT_ALLOWED_EMAILS`, for the assistant.
+- `PLAID_ENV=sandbox`, `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX` and `PLAID_TOKEN_ENCRYPTION_KEY`, for bank connections.
 
-Then add the deployed URL to Supabase's **URL Configuration** (step 1).
+Server-only keys never get a `VITE_` prefix. `/api/health` reports `assistant_ready` and `plaid_ready`, never the values. Vercel builds Python functions on its newest Python (3.14) with prebuilt wheels only, so check pins as described at the top of [`requirements.txt`](requirements.txt).
 
-## 5. Install it on your phones
+Add your own `public/icon-192.png` and `public/icon-512.png` before installing it on a phone ("Add to Home Screen").
 
-Once deployed, open the URL in Safari (iOS) or Chrome (Android) and use
-"Add to Home Screen" — it installs as a standalone app icon thanks to the
-PWA manifest already wired up in `vite.config.js`.
+More detail: [finance-agent/README.md](finance-agent/README.md) covers the agent and the Plaid endpoints, and [DESIGN.md](DESIGN.md) covers the design system.
 
-## Finance assistant (`finance-agent/`, `api/`)
+## What I'd do differently / next
 
-An AI assistant that answers questions about the household's finances lives in
-`finance-agent/` and deploys with the app as a Vercel Python function at `/api/chat` (same
-origin, no CORS). To enable it on Vercel, add `ANTHROPIC_API_KEY` and
-`ASSISTANT_ALLOWED_EMAILS` under Settings → Environment Variables; the Supabase settings are
-reused from the app's `VITE_` ones. See [finance-agent/README.md](finance-agent/README.md).
-
-## How the data model works
-
-- `households` — one row per family/couple.
-- `household_members` — who belongs to which household. Rows are only ever
-  created by `create_household()` or `redeem_invite()`, never directly.
-- `profiles` — each person's display name, filled in from the sign-up form and editable
-  from the account menu (each person can change only their own).
-- `household_roster()` — the Members page's list: name, email and join date for the members
-  of your own household only (emails live in `auth.users`, which the app can't read directly).
-- `category_usage()` — how often each category has been used, per type, over the household's
-  whole history; it drives the "Most used" chips in the add-transaction form. It runs as the
-  caller, so the transactions read policy limits it to your own household.
-- `invites` — pending/used invite links. Only a SHA-256 hash of each link's
-  token is stored; the link itself is shown once, when it's created.
-- `transactions` — the actual entries: `type` (income/expense), `amount`,
-  `date`, `category`, `note`, `author_id`/`author_email`. Entries created by a recurring
-  rule or a debt payment also carry `recurring_rule_id` / `debt_id` (set only by the
-  database functions below, never by the app directly).
-- `recurring_rules` — monthly income/expense rules. `materialize_recurring()` turns due
-  rules into transactions when someone opens the app (at most one per rule per date).
-  Recurring entries are only created when the app is opened. For fully automatic daily runs,
-  schedule `materialize_recurring` with Supabase's **pg_cron** (Database → Cron).
-- `debts` — credit cards, loans, mortgages. `log_debt_payment()` lowers the balance and
-  records the matching expense in one step; deleting that expense restores the balance.
-
-Row-level security means each person only ever sees their own household's
-data and their housemates' names, and can only delete transactions they
-added themselves — enforced in Postgres, not just in the UI. Passwords are
-handled entirely by Supabase Auth (stored as bcrypt hashes); the app never
-stores or logs them.
-
-## Icons
-
-Replace `public/icon-192.png` and `public/icon-512.png` with your own
-app icon before deploying (placeholders aren't included in this
-scaffold — add your own square PNGs at those two sizes).
+- **Evaluate the model, not just the tools.** The tests prove the tools' arithmetic, not that the model picks the right tool, reads the right date range, or keeps to the tone rules. The next step is a small eval set of household questions with expected tool calls and facts, scored on every prompt or model change. The move to a cheaper model was checked by hand, not measured.
+- **Build an eval set for the category mapping.** Mapping Plaid categories to ours ([plaid_categories.py](finance-agent/app/plaid_categories.py)) is a hand-written table plus heuristics, such as treating money in under a purchase category as a refund. The review queue already produces labels for free: the suggested category next to the one a person approved. Scoring the mapping against those would show where it's wrong.
+- **Detect transfers and card payments.** With a checking account and a credit card both linked, paying the card shows up on both sides. Today someone has to notice and skip it. The raw Plaid data needed to pair these automatically is already stored.
+- **Close the Plaid gaps before Production.**
+  - No webhooks: sync runs when a bank is connected and when someone taps Sync now.
+  - No re-login flow when a bank needs its login again (`ITEM_LOGIN_REQUIRED` is reported, not fixed).
+  - No allowlist on the Plaid endpoints, which Production pricing would need.
+  - No key rotation: a single Fernet key would need to become `MultiFernet`.
+- **Add frontend tests.** The UI is one large vanilla JS module with no test suite in the repo. It was checked with a fetch stub and headless Chrome scripts that live outside it. A few committed Playwright flows would catch regressions, for example sign-in, adding an entry, and approving an import.
+- **Run recurring rules on a schedule.** Entries are created when someone opens the app, so an unopened month lags. A `pg_cron` job calling the existing `materialize_recurring()` would fix it.
