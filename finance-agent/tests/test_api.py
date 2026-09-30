@@ -21,7 +21,8 @@ BODY = {"access_token": "t", "message": "How are we doing?", "history": []}
 @pytest.fixture
 def env(monkeypatch):
     # Start every test from a known environment, whatever a local .env loaded.
-    for name in ("ANTHROPIC_API_KEY", "ASSISTANT_ALLOWED_EMAILS"):
+    for name in ("ANTHROPIC_API_KEY", "ASSISTANT_ALLOWED_EMAILS", "PLAID_ENV", "PLAID_CLIENT_ID",
+                 "PLAID_SECRET_SANDBOX", "PLAID_TOKEN_ENCRYPTION_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(main, "get_user_email", lambda token: "ali@example.com")
     monkeypatch.setattr(main, "client_for_user", lambda token: object())
@@ -33,7 +34,7 @@ def env(monkeypatch):
 def test_health_is_served_under_api(env):
     resp = client.get("/api/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "assistant_ready": False}
+    assert resp.json() == {"status": "ok", "assistant_ready": False, "plaid_ready": False}
     env.setenv("ANTHROPIC_API_KEY", "x")
     env.setenv("ASSISTANT_ALLOWED_EMAILS", "ali@example.com")
     assert client.get("/api/health").json()["assistant_ready"] is True

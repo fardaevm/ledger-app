@@ -36,15 +36,23 @@ def client_for_user(access_token: str) -> Client:
     return client
 
 
-def get_user_email(access_token: str) -> str | None:
-    """The email of the user who owns `access_token`, verified by Supabase Auth (not just
-    decoded), or None if the token is invalid or expired."""
+def get_user(access_token: str) -> dict | None:
+    """{"id", "email"} of the user who owns `access_token`, verified by Supabase Auth (not
+    just decoded), or None if the token is invalid or expired."""
     try:
         resp = create_client(_setting("SUPABASE_URL"), _setting("SUPABASE_ANON_KEY")).auth.get_user(access_token)
     except Exception:  # noqa: BLE001 — any auth failure means "not signed in"
         return None
     user = getattr(resp, "user", None)
-    return getattr(user, "email", None) if user else None
+    if not user or not getattr(user, "id", None):
+        return None
+    return {"id": user.id, "email": getattr(user, "email", None)}
+
+
+def get_user_email(access_token: str) -> str | None:
+    """The email of the user who owns `access_token`, or None if the token is invalid."""
+    user = get_user(access_token)
+    return user["email"] if user else None
 
 
 def get_household_id(client: Client) -> str | None:

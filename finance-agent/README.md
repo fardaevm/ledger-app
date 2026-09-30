@@ -134,6 +134,8 @@ In **Vercel → Project → Settings → Environment Variables**, add:
 - `ANTHROPIC_API_KEY`: server-side only. **No `VITE_` prefix**, or Vite would build it into
   the page for every visitor.
 - `ASSISTANT_ALLOWED_EMAILS`: comma-separated emails that may use the assistant.
+- For bank connections: `PLAID_ENV` (`sandbox`), `PLAID_CLIENT_ID`, `PLAID_SECRET_SANDBOX`
+  and `PLAID_TOKEN_ENCRYPTION_KEY`. `/api/health` reports `plaid_ready`.
 
 `SUPABASE_URL` / `SUPABASE_ANON_KEY` aren't needed: the function falls back to the app's
 existing `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`. `ALLOWED_ORIGINS` isn't needed
@@ -142,6 +144,39 @@ either: the app and the assistant share an origin.
 After deploying, `https://<your-app>/api/health` returns `{"status":"ok","assistant_ready":…}`.
 `assistant_ready` turns `true` once both variables above are set (it never shows their
 values). Environment variable changes apply on the next deploy.
+
+## Bank connections (Plaid, Sandbox)
+
+The same FastAPI app also serves three Plaid endpoints (`app/plaid_routes.py`), with the same
+auth as `/api/chat`: the Supabase JWT in the body, verified by Supabase Auth, and every query
+through a client scoped to that user, so RLS does the household scoping.
+
+- `POST /api/plaid/link-token` `{access_token}` → `{link_token, expiration}` for Plaid Link.
+- `POST /api/plaid/exchange` `{access_token, public_token}` → `{item_id, institution_name}`.
+  Exchanges Link's public token, **encrypts** the Plaid access token (Fernet,
+  `app/token_crypto.py`) and stores it in `plaid_items`. The plaintext token is never logged
+  or returned. If saving fails, the item is removed at Plaid so nothing is left dangling.
+- `POST /api/plaid/sync` `{access_token, item_id?}` → per item: `queued`, `removed`,
+  `skipped_pending`, or an `error_code` (say `ITEM_LOGIN_REQUIRED`) without stopping the
+  other items. Pages through `/transactions/sync` from the stored cursor, upserts into
+  `plaid_review_queue` (**never** `transactions`), deletes unreviewed rows Plaid withdrew,
+  and saves the cursor last, so a failed run just repeats next time. Pending transactions
+  are skipped: Plaid replaces each with a posted one under a new id. Categories are mapped
+  by `app/plaid_categories.py`; a test checks each one exists in `src/main.js`.
+
+Plaid calls go through a thin httpx client (`app/plaid_client.py`), not the plaid-python
+SDK, to keep the function's cold start small. It refuses any `PLAID_ENV` but `sandbox`.
+
+Tables: migration 2026-09-29 in `supabase/schema.sql`. Household members read `plaid_items`
+and may only advance its `cursor` (a column grant); the linker unlinks.
+
+**Before Production:** sign-up is open, and every linked Item costs money in Production, so
+these endpoints need an allowlist like `ASSISTANT_ALLOWED_EMAILS` first. Webhooks, a review
+screen that moves queue rows into `transactions`, and relinking (`ITEM_LOGIN_REQUIRED`) are
+not built yet.
+
+Local testing: `dev/plaid-sandbox.html` (dev server only, never built or deployed) runs
+Link → exchange → sync with the Sandbox login `user_good` / `pass_good`.
 
 ## Wiring it into ledger-app
 

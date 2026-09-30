@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+  Dev-only harness for the Plaid endpoints (Sandbox). Not part of the app build: Vite's dev
+  server serves it at http://localhost:5173/dev/plaid-sandbox.html, and `npm run build` only
+  bundles index.html, so it never deploys.
+
+  It borrows the Supabase session of the app open in the same browser (same origin), so sign
+  in to the app on localhost:5173 first. Plaid Sandbox test login: user_good / pass_good.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plaid Sandbox test</title>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; color: #0F172A; background: #F8FAFC; }
+    button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #CBD5E1; background: #fff; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    ol > li { margin-bottom: 14px; }
+    pre { background: #0F172A; color: #E2E8F0; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Plaid Sandbox test</h1>
+  <p id="who">Checking for a signed-in session…</p>
+  <ol>
+    <li><button id="linkTokenBtn" disabled>POST /api/plaid/link-token</button></li>
+    <li><button id="openLinkBtn" disabled>Open Plaid Link</button> then pick any bank, log in with <b>user_good</b> / <b>pass_good</b>.
+      On success this page calls <code>POST /api/plaid/exchange</code> automatically.</li>
+    <li><button id="syncBtn" disabled>POST /api/plaid/sync</button> (Sandbox can take a few seconds after linking before transactions exist; sync again if you get 0.)</li>
+  </ol>
+  <pre id="log">Log appears here.</pre>
+  <script>
+    const log = (label, value) => {
+      const el = document.getElementById("log");
+      el.textContent = (el.textContent === "Log appears here." ? "" : el.textContent + "\n\n") +
+        label + "\n" + (typeof value === "string" ? value : JSON.stringify(value, null, 2));
+    };
+    // The app's supabase-js session, stored under sb-<project-ref>-auth-token.
+    const key = Object.keys(localStorage).find((k) => /^sb-.*-auth-token$/.test(k));
+    const session = key && JSON.parse(localStorage.getItem(key));
+    const jwt = session?.access_token;
+    document.getElementById("who").textContent = jwt
+      ? `Using the app session for ${session.user?.email}.`
+      : "No app session found. Sign in at http://localhost:5173/ first, then reload this page.";
+
+    async function call(path, body = {}) {
+      const resp = await fetch(path, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ access_token: jwt, ...body }) });
+      const data = await resp.json().catch(() => ({}));
+      log(`${path} → ${resp.status}`, data);
+      if (!resp.ok) throw new Error(data.detail || resp.status);
+      return data;
+    }
+
+    let handler = null;
+    const linkTokenBtn = document.getElementById("linkTokenBtn");
+    const openLinkBtn = document.getElementById("openLinkBtn");
+    const syncBtn = document.getElementById("syncBtn");
+    linkTokenBtn.disabled = syncBtn.disabled = !jwt;
+
+    linkTokenBtn.onclick = async () => {
+      const { link_token } = await call("/api/plaid/link-token");
+      handler = Plaid.create({
+        token: link_token,
+        onSuccess: async (public_token, metadata) => {
+          log("Plaid Link onSuccess", { institution: metadata.institution?.name, accounts: metadata.accounts?.length });
+          await call("/api/plaid/exchange", { public_token });
+        },
+        onExit: (err) => err && log("Plaid Link onExit", err)
+      });
+      openLinkBtn.disabled = false;
+    };
+    openLinkBtn.onclick = () => handler?.open();
+    syncBtn.onclick = () => call("/api/plaid/sync");
+  </script>
+</body>
+</html>

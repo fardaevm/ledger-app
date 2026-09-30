@@ -683,3 +683,95 @@ as $$
 $$;
 revoke execute on function category_usage(uuid) from public, anon;
 grant execute on function category_usage(uuid) to authenticated;
+
+-- MIGRATION 2026-09-29: Plaid bank connections (Sandbox) ------------------------------
+-- Existing projects: run just this block in the SQL editor. Safe to re-run. Adds two tables
+-- and two columns on transactions; every existing entry becomes source 'manual'.
+-- Written only by the server (/api/plaid/*), which queries with the caller's own JWT, so
+-- these policies are what keeps one household out of another's bank data.
+
+-- One row per linked bank login ("Item" in Plaid's terms). access_token is Fernet-encrypted
+-- by the server (PLAID_TOKEN_ENCRYPTION_KEY, which only the server has) before it gets here:
+-- members can read the row, but the ciphertext is useless without that key.
+create table if not exists plaid_items (
+  id uuid primary key default gen_random_uuid(),
+  household_id uuid references households(id) on delete cascade not null,
+  access_token text not null,
+  item_id text not null unique,
+  institution_name text,
+  cursor text,  -- /transactions/sync position; null = never synced
+  linked_by uuid references auth.users(id) not null,
+  created_at timestamptz not null default now()
+);
+
+-- Where a transaction came from. The app's own inserts can't set either column (see the
+-- column grant in 2026-09-27b), so manual entries are always 'manual'; only a server-side
+-- import from the review queue will write 'plaid'.
+alter table transactions add column if not exists plaid_transaction_id text;
+alter table transactions add column if not exists source text not null default 'manual';
+do $$ begin
+  alter table transactions add constraint transactions_plaid_transaction_id_key unique (plaid_transaction_id);
+exception when duplicate_object or duplicate_table then null;
+end $$;
+do $$ begin
+  alter table transactions add constraint transactions_source_check check (source in ('manual', 'plaid'));
+exception when duplicate_object then null;
+end $$;
+
+-- Synced bank transactions wait here until someone reviews them; nothing goes straight into
+-- the ledger. One row per bank transaction per household (sync upserts on this pair).
+create table if not exists plaid_review_queue (
+  id uuid primary key default gen_random_uuid(),
+  household_id uuid references households(id) on delete cascade not null,
+  plaid_transaction_id text not null,
+  suggested_category text not null default 'Other',
+  amount numeric not null check (amount > 0),
+  date date not null,
+  merchant_name text,
+  type text not null check (type in ('income', 'expense')),
+  raw_plaid_data jsonb,  -- the transaction as Plaid sent it, for debugging the mapping
+  reviewed boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique (household_id, plaid_transaction_id)
+);
+create index if not exists plaid_review_queue_pending_idx on plaid_review_queue (household_id, reviewed, date desc);
+
+alter table plaid_items enable row level security;
+alter table plaid_review_queue enable row level security;
+
+-- Items: the same pattern as debts (members read and add; the linker removes), except that
+-- ANY member may advance the sync cursor, since either partner can press sync. The column
+-- grant limits updates to the cursor: the token, item and owner are fixed once linked.
+drop policy if exists "members read household plaid items" on plaid_items;
+create policy "members read household plaid items"
+  on plaid_items for select using (household_id in (select my_household_ids()));
+drop policy if exists "members link plaid items" on plaid_items;
+create policy "members link plaid items"
+  on plaid_items for insert
+  with check (linked_by = auth.uid() and household_id in (select my_household_ids()));
+drop policy if exists "members advance the plaid cursor" on plaid_items;
+create policy "members advance the plaid cursor"
+  on plaid_items for update
+  using (household_id in (select my_household_ids()))
+  with check (household_id in (select my_household_ids()));
+drop policy if exists "linkers unlink their plaid items" on plaid_items;
+create policy "linkers unlink their plaid items"
+  on plaid_items for delete using (linked_by = auth.uid());
+revoke update on plaid_items from anon, authenticated;
+grant update (cursor) on plaid_items to authenticated;
+
+-- Review queue: any member reads, adds (via sync), marks reviewed and clears.
+drop policy if exists "members read household review queue" on plaid_review_queue;
+create policy "members read household review queue"
+  on plaid_review_queue for select using (household_id in (select my_household_ids()));
+drop policy if exists "members add to household review queue" on plaid_review_queue;
+create policy "members add to household review queue"
+  on plaid_review_queue for insert with check (household_id in (select my_household_ids()));
+drop policy if exists "members update household review queue" on plaid_review_queue;
+create policy "members update household review queue"
+  on plaid_review_queue for update
+  using (household_id in (select my_household_ids()))
+  with check (household_id in (select my_household_ids()));
+drop policy if exists "members clear household review queue" on plaid_review_queue;
+create policy "members clear household review queue"
+  on plaid_review_queue for delete using (household_id in (select my_household_ids()));

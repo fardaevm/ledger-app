@@ -16,6 +16,7 @@ from fastapi import APIRouter, FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from . import agent  # noqa: E402
+from .plaid_routes import plaid_ready, router as plaid_router  # noqa: E402
 from .schemas import ChatRequest, ChatResponse, ToolCallTrace  # noqa: E402
 from .supabase_client import client_for_user, get_household_id, get_user_email  # noqa: E402
 
@@ -83,9 +84,10 @@ def chat(req: ChatRequest) -> ChatResponse:
 
 @router.get("/health")
 def health() -> dict:
-    # assistant_ready says whether the two settings /api/chat needs are present (never
-    # their values), so a deploy can be checked from the browser.
-    return {"status": "ok", "assistant_ready": assistant_ready()}
+    # assistant_ready / plaid_ready say whether the settings /api/chat and /api/plaid/* need
+    # are present (never their values), so a deploy can be checked from the browser.
+    return {"status": "ok", "assistant_ready": assistant_ready(), "plaid_ready": plaid_ready()}
 
 
 app.include_router(router)
+app.include_router(plaid_router)

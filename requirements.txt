@@ -13,3 +13,5 @@ anthropic==0.40.0
 supabase==2.9.1
 python-dotenv==1.0.1
 pydantic==2.13.5
+# Encrypts stored Plaid access tokens (Fernet). Ships abi3 wheels, so new Pythons are covered.
+cryptography==46.0.3
